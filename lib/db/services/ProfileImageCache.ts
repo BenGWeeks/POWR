@@ -61,7 +61,33 @@ export class ProfileImageCache {
   private initializeWebCache() {
     if (!isWeb) return;
     
+    // Use a deferred initialization approach for web
+    // This allows the component to initialize even when localStorage
+    // isn't available yet (during SSR/bundling)
+    
+    // Mark as initialized anyway
+    this.initialized = true;
+    
+    // If we're in a server context, just return without trying to access localStorage
+    if (typeof window === 'undefined') {
+      logger.debug('Running in server context, deferring web cache initialization');
+      return;
+    }
+    
     try {
+      // Safely check if localStorage is available
+      let isLocalStorageAvailable = false;
+      try {
+        const testKey = '__test_storage__';
+        window.localStorage.setItem(testKey, testKey);
+        window.localStorage.removeItem(testKey);
+        isLocalStorageAvailable = true;
+      } catch (e) {
+        logger.debug('localStorage not available, using in-memory storage only');
+      }
+      
+      if (!isLocalStorageAvailable) return;
+      
       // Try to load cached URLs from localStorage
       const cachedData = WebStorage.getItem('profile-image-cache');
       if (cachedData) {
@@ -80,6 +106,7 @@ export class ProfileImageCache {
         logger.debug(`Loaded ${this.webCache.size} profile images from web cache`);
       }
     } catch (error) {
+      // Just log and continue - this won't block the app
       logger.warn('Failed to load web cache from localStorage:', error);
     }
   }

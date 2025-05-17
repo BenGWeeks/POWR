@@ -122,11 +122,8 @@ const styles = StyleSheet.create({
     maxHeight: '80%',
     borderRadius: 12,
     padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
+    boxShadow: '0px 2px 3.84px rgba(0, 0, 0, 0.25)',
+    elevation: 5, // Keep elevation for Android
   },
   header: {
     flexDirection: 'row',

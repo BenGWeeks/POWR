@@ -1,6 +1,6 @@
 // lib/hooks/useExercises.ts
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { useSQLiteContext } from 'expo-sqlite';
+import { useDatabase } from '@/components/DatabaseProvider';
 import { 
   ExerciseDisplay, 
   ExerciseCategory, 
@@ -37,7 +37,7 @@ const initialStats: ExerciseStats = {
 };
 
 export function useExercises() {
-  const db = useSQLiteContext();
+  const db = useDatabase();
   const libraryService = React.useMemo(() => new LibraryService(db), [db]);
   const { refreshCount, refreshExercises, isLoading, setLoading } = useExerciseRefresh();
   

@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import * as FileSystem from 'expo-file-system';
-import { Database, openDatabaseSync } from 'expo-sqlite-next';
+import { SQLiteDatabase, openDatabaseSync } from 'expo-sqlite';
 
 export async function getDatabasePath(dbName: string): Promise<string | null> {
   if (Platform.OS === 'web') {
@@ -17,7 +17,7 @@ export async function getDatabasePath(dbName: string): Promise<string | null> {
   }
 }
 
-export async function checkDatabaseTables(db: Database): Promise<string[]> {
+export async function checkDatabaseTables(db: SQLiteDatabase): Promise<string[]> {
   try {
     const result = await db.getFirstAsync<{ tables: string }>(
       "SELECT group_concat(name) as tables FROM sqlite_master WHERE type='table'"

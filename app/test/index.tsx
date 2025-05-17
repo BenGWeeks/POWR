@@ -159,11 +159,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16,
     marginBottom: 24,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
+    boxShadow: '0px 2px 4px rgba(0, 0, 0, 0.1)',
+    elevation: 3, // Keep elevation for Android
   },
   cardTitle: {
     fontSize: 18,
@@ -198,11 +195,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     padding: 16,
     flexDirection: 'row',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
+    boxShadow: '0px 1px 2px rgba(0, 0, 0, 0.1)',
+    elevation: 2, // Keep elevation for Android
   },
   iconContainer: {
     width: 48,

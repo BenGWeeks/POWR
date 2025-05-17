@@ -30,7 +30,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { FIXED_COLORS } from '@/lib/theme/colors';
-import { useSQLiteContext } from 'expo-sqlite';
+import { usePlatformDB } from '@/lib/hooks/usePlatformDB';
 import { useLibraryStore } from '@/lib/stores/libraryStore';
 import { useWorkoutStore } from '@/stores/workoutStore';
 
@@ -58,8 +58,8 @@ export default function SettingsDrawer() {
   const [showRelayManager, setShowRelayManager] = useState(false);
   const [showResetDataAlert, setShowResetDataAlert] = useState(false);
   
-  // Database access for reset functionality
-  const db = useSQLiteContext();
+  // Database access for reset functionality with web platform safety
+  const db = usePlatformDB();
   
   const slideAnim = useRef(new Animated.Value(-DRAWER_WIDTH)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -503,10 +503,7 @@ const styles = StyleSheet.create({
     borderRightWidth: 1,
     ...Platform.select({
       ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.25,
-        shadowRadius: 3.84,
+        boxShadow: '0px 2px 3.84px rgba(0, 0, 0, 0.25)',
       },
       android: {
         elevation: 5,

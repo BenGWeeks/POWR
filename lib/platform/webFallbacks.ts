@@ -80,11 +80,45 @@ export function logErrorOnceAndFallback<T>(
 /**
  * Web storage adapter - uses localStorage for persistence
  */
+/**
+ * Safe check if localStorage is available
+ * This handles all edge cases during SSR and initial rendering
+ */
+const isLocalStorageAvailable = (): boolean => {
+  if (!isWeb) return false;
+  
+  // Check if we're in a non-browser environment (SSR)
+  if (typeof window === 'undefined') return false;
+  
+  try {
+    // Test if localStorage is accessible
+    const testKey = '__storage_test__';
+    window.localStorage.setItem(testKey, testKey);
+    window.localStorage.removeItem(testKey);
+    return true;
+  } catch (e) {
+    return false;
+  }
+};
+
+/**
+ * Fallback storage mechanism when localStorage isn't available
+ * This ensures we still have some persistence during the session
+ */
+const memoryStore = new Map<string, string>();
+
 export class WebStorage {
   static getItem(key: string): string | null {
     if (!isWeb) return null;
+    
     try {
-      return localStorage.getItem(key);
+      // First check if localStorage is available
+      if (isLocalStorageAvailable()) {
+        return localStorage.getItem(key);
+      }
+      
+      // Fall back to memory store
+      return memoryStore.get(key) || null;
     } catch (err) {
       console.warn('[Web Storage] Failed to get item:', err);
       return null;
@@ -93,19 +127,38 @@ export class WebStorage {
   
   static setItem(key: string, value: string): void {
     if (!isWeb) return;
+    
     try {
-      localStorage.setItem(key, value);
+      // Try localStorage first
+      if (isLocalStorageAvailable()) {
+        localStorage.setItem(key, value);
+        return;
+      }
+      
+      // Fall back to memory store
+      memoryStore.set(key, value);
     } catch (err) {
       console.warn('[Web Storage] Failed to set item:', err);
+      // Still try to save to memory store as fallback
+      memoryStore.set(key, value);
     }
   }
   
   static removeItem(key: string): void {
     if (!isWeb) return;
+    
     try {
-      localStorage.removeItem(key);
+      // Try to remove from both storage mechanisms
+      if (isLocalStorageAvailable()) {
+        localStorage.removeItem(key);
+      }
+      
+      // Always clean up memory store too
+      memoryStore.delete(key);
     } catch (err) {
       console.warn('[Web Storage] Failed to remove item:', err);
+      // Still try to remove from memory store
+      memoryStore.delete(key);
     }
   }
 }

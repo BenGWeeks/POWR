@@ -25,7 +25,7 @@ export class TemplateService {
   private db: DbService;
   
   constructor(db: SQLiteDatabase, private exerciseService: ExerciseService) {
-    // Convert SQLiteDatabase to DbService
+    // Convert Database to DbService
     this.db = db as unknown as DbService;
   }
 

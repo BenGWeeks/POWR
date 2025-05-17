@@ -1,6 +1,7 @@
 // stores/workoutStore.ts
 import { create } from 'zustand';
 import { createSelectors } from '@/utils/createSelectors';
+import { Platform } from 'react-native';
 import { generateId } from '@/utils/ids';
 import type { 
   Workout, 
@@ -18,7 +19,8 @@ import type {
   TemplateExerciseConfig
 } from '@/types/templates';
 import type { BaseExercise } from '@/types/exercise';
-import { openDatabaseSync } from 'expo-sqlite';
+// Use our database adapter instead of direct SQLite access
+import { createDatabaseAdapter } from '@/lib/platform/databaseAdapter';
 import { FavoritesService } from '@/lib/db/services/FavoritesService';
 import { router } from 'expo-router';
 import { useNDKStore } from '@/lib/stores/ndk';
@@ -766,25 +768,117 @@ const useWorkoutStoreBase = create<ExtendedWorkoutState & ExtendedWorkoutActions
     });
   },
 
-  // Favorite Management with SQLite persistence - IMPROVED VERSION
+  // Favorite Management with SQLite persistence - WEB-COMPATIBLE VERSION
   loadFavorites: async () => {
     try {
-      // Get the favorites service through a local import trick since we can't use hooks here
-      const db = openDatabaseSync('powr.db');
-      const favoritesService = new FavoritesService(db);
+      // Platform check for web
+      const isWeb = Platform.OS === 'web';
+      if (isWeb) {
+        console.log('[Favorites] Web platform detected, using stored favorites or empty array');
+        
+        // For web, try to get favorites from localStorage
+        try {
+          const storedFavorites = localStorage.getItem('powr_favorite_ids');
+          if (storedFavorites) {
+            const favoriteIds = JSON.parse(storedFavorites);
+            set({ favoriteIds, favoritesLoaded: true });
+            console.log(`[Favorites] Loaded ${favoriteIds.length} favorite IDs from web storage`);
+            return;
+          }
+        } catch (webStorageError) {
+          console.log('[Favorites] Web storage unavailable, using empty favorites');
+        }
+        
+        // If we can't get favorites from storage, use empty array
+        set({ favoriteIds: [], favoritesLoaded: true });
+        return;
+      }
       
-      // Load just the IDs 
-      const favoriteIds = await favoritesService.getFavoriteIds('template');
+      // For native platforms, use our adapter with non-blocking initialization
+      const dbAdapter = createDatabaseAdapter('powr.db');
       
-      set({ 
-        favoriteIds, 
-        favoritesLoaded: true 
+      // Wait until the adapter is ready (with a timeout to prevent blocking)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Database initialization timeout')), 3000);
       });
       
-      console.log(`Loaded ${favoriteIds.length} favorite IDs from database`);
+      // Poll for db readiness with a timeout
+      const waitForAdapter = async () => {
+        // Try for 3 seconds
+        let attempts = 0;
+        while (!dbAdapter.isInitialized() && attempts < 30) {
+          await new Promise(r => setTimeout(r, 100));
+          attempts++;
+        }
+        return dbAdapter.isInitialized();
+      };
+      
+      let isReady = false;
+      try {
+        // Race the wait with a timeout
+        const result = await Promise.race([waitForAdapter(), timeoutPromise]);
+        isReady = result === true;
+      } catch (timeoutError) {
+        console.warn('[Favorites] Database initialization timed out, using empty favorites');
+        // Continue with empty favorites array
+        set({ favoriteIds: [], favoritesLoaded: true });
+        return;
+      }
+      
+      if (!isReady) {
+        console.warn('[Favorites] Database not ready, using empty favorites');
+        set({ favoriteIds: [], favoritesLoaded: true });
+        return;
+      }
+      
+      // Get the native database connection
+      const db = dbAdapter.getNativeDatabase();
+      if (!db) {
+        console.warn('[Favorites] Database connection not available, using empty favorites');
+        set({ favoriteIds: [], favoritesLoaded: true });
+        return;
+      }
+      
+      // Create the favorites service with our database
+      const favoritesService = new FavoritesService(db);
+      
+      // Ensure the table exists
+      try {
+        // Just do a simple query to check if table exists
+        await favoritesService.getFavoriteIds('template');
+      } catch (tableError) {
+        console.warn('[Favorites] Could not ensure favorites table exists:', tableError);
+        set({ favoriteIds: [], favoritesLoaded: true });
+        return;
+      }
+      
+      // Load just the IDs 
+      try {
+        const favoriteIds = await favoritesService.getFavoriteIds('template');
+        
+        // For web, also store in localStorage for faster access next time
+        if (isWeb) {
+          try {
+            localStorage.setItem('powr_favorite_ids', JSON.stringify(favoriteIds));
+          } catch (storageError) {
+            // Non-critical error, just log it
+            console.warn('[Favorites] Failed to save favorites to web storage:', storageError);
+          }
+        }
+        
+        set({ favoriteIds, favoritesLoaded: true });
+        console.log(`[Favorites] Loaded ${favoriteIds.length} favorite IDs from database`);
+      } catch (loadError) {
+        console.warn('[Favorites] Error loading favorite IDs:', loadError);
+        set({ favoriteIds: [], favoritesLoaded: true });
+      }
     } catch (error) {
-      console.error('Error loading favorites:', error);
-      set({ favoritesLoaded: true }); // Mark as loaded even on error
+      // This is a fallback catch-all to prevent the app from crashing
+      console.warn('[Favorites] Unexpected error loading favorites, using empty array');
+      set({ 
+        favoriteIds: [], 
+        favoritesLoaded: true 
+      }); 
     }
   },
   
@@ -802,7 +896,29 @@ const useWorkoutStoreBase = create<ExtendedWorkoutState & ExtendedWorkoutActions
     }
     
     try {
-      const db = openDatabaseSync('powr.db');
+      // Use the database adapter
+      const dbAdapter = createDatabaseAdapter('powr.db');
+      
+      // Wait for db adapter to be ready
+      const waitForAdapter = async () => {
+        let attempts = 0;
+        while (!dbAdapter.isInitialized() && attempts < 50) {
+          await new Promise(r => setTimeout(r, 100));
+          attempts++;
+        }
+        return dbAdapter.isInitialized();
+      };
+      
+      const isReady = await waitForAdapter();
+      if (!isReady) {
+        throw new Error('Database adapter initialization timeout');
+      }
+      
+      const db = dbAdapter.getNativeDatabase();
+      if (!db) {
+        throw new Error('Unable to get database instance');
+      }
+      
       const favoritesService = new FavoritesService(db);
       
       return await favoritesService.getFavorites('template');
@@ -814,7 +930,29 @@ const useWorkoutStoreBase = create<ExtendedWorkoutState & ExtendedWorkoutActions
   
   addFavorite: async (template: WorkoutTemplate) => {
     try {
-      const db = openDatabaseSync('powr.db');
+      // Use the database adapter
+      const dbAdapter = createDatabaseAdapter('powr.db');
+      
+      // Wait for db adapter to be ready
+      const waitForAdapter = async () => {
+        let attempts = 0;
+        while (!dbAdapter.isInitialized() && attempts < 50) {
+          await new Promise(r => setTimeout(r, 100));
+          attempts++;
+        }
+        return dbAdapter.isInitialized();
+      };
+      
+      const isReady = await waitForAdapter();
+      if (!isReady) {
+        throw new Error('Database adapter initialization timeout');
+      }
+      
+      const db = dbAdapter.getNativeDatabase();
+      if (!db) {
+        throw new Error('Unable to get database instance');
+      }
+      
       const favoritesService = new FavoritesService(db);
       
       // Add to favorites database
@@ -838,7 +976,29 @@ const useWorkoutStoreBase = create<ExtendedWorkoutState & ExtendedWorkoutActions
   
   removeFavorite: async (templateId: string) => {
     try {
-      const db = openDatabaseSync('powr.db');
+      // Use the database adapter
+      const dbAdapter = createDatabaseAdapter('powr.db');
+      
+      // Wait for db adapter to be ready
+      const waitForAdapter = async () => {
+        let attempts = 0;
+        while (!dbAdapter.isInitialized() && attempts < 50) {
+          await new Promise(r => setTimeout(r, 100));
+          attempts++;
+        }
+        return dbAdapter.isInitialized();
+      };
+      
+      const isReady = await waitForAdapter();
+      if (!isReady) {
+        throw new Error('Database adapter initialization timeout');
+      }
+      
+      const db = dbAdapter.getNativeDatabase();
+      if (!db) {
+        throw new Error('Unable to get database instance');
+      }
+      
       const favoritesService = new FavoritesService(db);
       
       // Remove from favorites database
@@ -926,11 +1086,32 @@ const useWorkoutStoreBase = create<ExtendedWorkoutState & ExtendedWorkoutActions
 
 async function getTemplate(templateId: string): Promise<WorkoutTemplate | null> {
   try {
-    // Try to get it from favorites in the database
-    const db = openDatabaseSync('powr.db');
+    // Use our database adapter
+    const dbAdapter = createDatabaseAdapter('powr.db');
+    
+    // Wait for db adapter to be ready
+    const waitForAdapter = async () => {
+      let attempts = 0;
+      while (!dbAdapter.isInitialized() && attempts < 50) {
+        await new Promise(r => setTimeout(r, 100));
+        attempts++;
+      }
+      return dbAdapter.isInitialized();
+    };
+    
+    const isReady = await waitForAdapter();
+    if (!isReady) {
+      throw new Error('Database adapter initialization timeout');
+    }
+    
+    const db = dbAdapter.getNativeDatabase();
+    if (!db) {
+      throw new Error('Unable to get database instance');
+    }
+    
     const favoritesService = new FavoritesService(db);
     const exerciseService = new ExerciseService(db);
-    const templateService = new TemplateService(db, new ExerciseService(db));
+    const templateService = new TemplateService(db, exerciseService);
     
     // First try to get from favorites
     const favoriteResult = await favoritesService.getContentById<WorkoutTemplate>('template', templateId);
@@ -952,7 +1133,29 @@ async function getTemplate(templateId: string): Promise<WorkoutTemplate | null> 
  */
 async function saveWorkout(workout: Workout): Promise<void> {
   try {
-    const db = openDatabaseSync('powr.db');
+    // Use our database adapter
+    const dbAdapter = createDatabaseAdapter('powr.db');
+    
+    // Wait for db adapter to be ready
+    const waitForAdapter = async () => {
+      let attempts = 0;
+      while (!dbAdapter.isInitialized() && attempts < 50) {
+        await new Promise(r => setTimeout(r, 100));
+        attempts++;
+      }
+      return dbAdapter.isInitialized();
+    };
+    
+    const isReady = await waitForAdapter();
+    if (!isReady) {
+      throw new Error('Database adapter initialization timeout');
+    }
+    
+    const db = dbAdapter.getNativeDatabase();
+    if (!db) {
+      throw new Error('Unable to get database instance');
+    }
+    
     const workoutService = new WorkoutService(db);
     await workoutService.saveWorkout(workout);
   } catch (error) {
@@ -1045,7 +1248,31 @@ function calculateWorkoutSummary(workout: Workout): WorkoutSummary {
  */
 async function saveSummary(summary: WorkoutSummary): Promise<void> {
   try {
-    const db = openDatabaseSync('powr.db');
+    // Use our database adapter
+    const dbAdapter = createDatabaseAdapter('powr.db');
+    
+    // Wait for db adapter to be ready
+    const waitForAdapter = async () => {
+      let attempts = 0;
+      while (!dbAdapter.isInitialized() && attempts < 50) {
+        await new Promise(r => setTimeout(r, 100));
+        attempts++;
+      }
+      return dbAdapter.isInitialized();
+    };
+    
+    const isReady = await waitForAdapter();
+    if (!isReady) {
+      console.warn('Database not ready, skipping summary save');
+      return;
+    }
+    
+    const db = dbAdapter.getNativeDatabase();
+    if (!db) {
+      console.warn('Unable to get database instance, skipping summary save');
+      return;
+    }
+    
     const workoutService = new WorkoutService(db);
     await workoutService.saveWorkoutSummary(summary.id, summary);
   } catch (error) {
