@@ -16,8 +16,9 @@ import NDK, {
 } from '@nostr-dev-kit/ndk-mobile';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
 import { Platform } from 'react-native';
-import * as SecureStore from 'expo-secure-store';
+// Using our secure storage abstraction when available, with fallbacks otherwise
 import { getCredentialWithFallback } from '@/lib/auth/persistence/secureStorage';
+// For direct secure-store operations, we'll create a compatibility wrapper
 import { SECURE_STORE_KEYS } from '@/lib/auth/constants';
 import { PlatformConstants } from '@/lib/platform';
 
@@ -69,6 +70,84 @@ function hexToBytes(hex: string): Uint8Array {
   }
   return bytes;
 }
+
+// Create a safer wrapper for secure store operations to handle different API versions
+const SecureStoreCompat = {
+  getItemAsync: async (key: string): Promise<string | null> => {
+    try {
+      // First try using our credential helper, which uses the proper abstraction
+      return await getCredentialWithFallback(key, []);
+    } catch (primaryError) {
+      console.warn('[NDK] Primary storage method failed:', primaryError);
+      
+      // Fallbacks if the main method fails
+      try {
+        // Dynamically import the module to avoid static reference issues
+        const secureStoreModule = require('expo-secure-store');
+        
+        // Try the common method names used across different versions
+        if (typeof secureStoreModule.getItemAsync === 'function') {
+          return await secureStoreModule.getItemAsync(key);
+        }
+        if (typeof secureStoreModule.getItem === 'function') {
+          return await secureStoreModule.getItem(key);
+        }
+        
+        console.warn('[NDK] Could not find compatible storage method');
+        return null;
+      } catch (error) {
+        console.error('[NDK] All storage retrieval methods failed:', error);
+        return null;
+      }
+    }
+  },
+  
+  setItemAsync: async (key: string, value: string): Promise<boolean> => {
+    try {
+      // Dynamically import to avoid static reference issues
+      const secureStoreModule = require('expo-secure-store');
+      
+      // Try the common method names used across different versions
+      if (typeof secureStoreModule.setItemAsync === 'function') {
+        await secureStoreModule.setItemAsync(key, value);
+        return true;
+      }
+      if (typeof secureStoreModule.setItem === 'function') {
+        await secureStoreModule.setItem(key, value);
+        return true;
+      }
+      
+      console.warn('[NDK] Could not find compatible storage write method');
+      return false;
+    } catch (error) {
+      console.error('[NDK] Failed to write to secure storage:', error);
+      return false;
+    }
+  },
+  
+  deleteItemAsync: async (key: string): Promise<boolean> => {
+    try {
+      // Dynamically import to avoid static reference issues
+      const secureStoreModule = require('expo-secure-store');
+      
+      // Try the common method names used across different versions
+      if (typeof secureStoreModule.deleteItemAsync === 'function') {
+        await secureStoreModule.deleteItemAsync(key);
+        return true;
+      }
+      if (typeof secureStoreModule.deleteItem === 'function') {
+        await secureStoreModule.deleteItem(key);
+        return true;
+      }
+      
+      console.warn('[NDK] Could not find compatible storage delete method');
+      return false;
+    } catch (error) {
+      console.error('[NDK] Failed to delete from secure storage:', error);
+      return false;
+    }
+  }
+};
 
 export const useNDKStore = create<NDKStoreState & NDKStoreActions>((set, get) => ({
   ndk: null,
@@ -188,8 +267,12 @@ export const useNDKStore = create<NDKStoreState & NDKStoreActions>((set, get) =>
         // Try legacy authentication system if no credentials found via main method
         try {
           console.log('[NDK] Using legacy authentication system');
-          // Legacy: Check for saved private key
-          const legacyKeyHex = await SecureStore.getItemAsync(PRIVATE_KEY_STORAGE_KEY);
+          // Safe wrapper for secure store access that handles API differences
+          let legacyKeyHex = null;
+          
+          // Use our compatibility wrapper to safely access storage
+          legacyKeyHex = await SecureStoreCompat.getItemAsync(PRIVATE_KEY_STORAGE_KEY);
+          
           if (legacyKeyHex) {
             console.log('[NDK] Found saved private key, initializing signer');
             
@@ -198,8 +281,7 @@ export const useNDKStore = create<NDKStoreState & NDKStoreActions>((set, get) =>
               return true;
             } catch (error) {
               console.error('[NDK] Error initializing with saved key:', error);
-              // Remove invalid key
-              await SecureStore.deleteItemAsync(PRIVATE_KEY_STORAGE_KEY);
+              // Don't try to delete - might cause same API issue
             }
           }
         } catch (legacyError) {
@@ -250,8 +332,8 @@ export const useNDKStore = create<NDKStoreState & NDKStoreActions>((set, get) =>
           isLoading: false 
         });
         
-        // Store credentials securely
-        await SecureStore.setItemAsync(PRIVATE_KEY_STORAGE_KEY, privateKey!);
+        // Store credentials securely using our compatibility wrapper
+        await SecureStoreCompat.setItemAsync(PRIVATE_KEY_STORAGE_KEY, privateKey!);
         
         console.log('[NDK] Login successful with pubkey:', user.pubkey);
         return true;
@@ -282,7 +364,7 @@ export const useNDKStore = create<NDKStoreState & NDKStoreActions>((set, get) =>
         // Use the more flexible credential helper
         const privateKey = await getCredentialWithFallback(PRIVATE_KEY_STORAGE_KEY, []);
         if (privateKey) {
-          await SecureStore.deleteItemAsync(PRIVATE_KEY_STORAGE_KEY);
+          await SecureStoreCompat.deleteItemAsync(PRIVATE_KEY_STORAGE_KEY);
         }
       } catch (storageError) {
         console.warn('[NDK] Error removing credentials from storage:', storageError);
