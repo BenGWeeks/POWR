@@ -1,7 +1,7 @@
-import * as FileSystem from 'expo-file-system';
 import NDK, { NDKUser, NDKSubscriptionCacheUsage } from '@nostr-dev-kit/ndk-mobile';
-import { createLogger, enableModule } from '@/lib/utils/logger';
+import { createLogger, enableModule } from '../../utils/logger';
 import { Platform } from 'react-native';
+import { fileSystem } from '../../platform/fileSystemAdapter';
 
 // Enable logging for BannerImageCache
 enableModule('BannerImageCache');
@@ -38,7 +38,7 @@ export class BannerImageCache {
   private initialized: boolean = false;
   
   constructor() {
-    this.cacheDirectory = `${FileSystem.cacheDirectory}banner-images/`;
+    this.cacheDirectory = `${fileSystem.getCacheDirectory()}banner-images/`;
     this.ensureCacheDirectoryExists();
   }
   
@@ -61,13 +61,14 @@ export class BannerImageCache {
    */
   private async ensureCacheDirectoryExists() {
     try {
-      const dirInfo = await FileSystem.getInfoAsync(this.cacheDirectory);
-      if (!dirInfo.exists) {
-        await FileSystem.makeDirectoryAsync(this.cacheDirectory, { intermediates: true });
-        console.log(`Created banner image cache directory: ${this.cacheDirectory}`);
+      const dirInfo = await fileSystem.getInfoAsync(this.cacheDirectory);
+      if (!dirInfo || !dirInfo.exists) {
+        await fileSystem.makeDirectoryAsync(this.cacheDirectory, { intermediates: true });
+        logger.info(`Created banner image cache directory: ${this.cacheDirectory}`);
       }
     } catch (error) {
-      console.error('Error creating banner cache directory:', error);
+      // Log the error but don't throw - we need to handle web platform gracefully
+      logger.warn('Error creating banner cache directory - web fallback will be used:', error);
     }
   }
   
@@ -78,7 +79,7 @@ export class BannerImageCache {
   private async initializeCacheMetadata() {
     try {
       // Get list of all cached files
-      const files = await FileSystem.readDirectoryAsync(this.cacheDirectory);
+      const files = await fileSystem.readDirectoryAsync(this.cacheDirectory);
       this.cacheSize = 0;
       
       // Process each file to build the access log and calculate total size
@@ -86,9 +87,9 @@ export class BannerImageCache {
         if (!file.endsWith('_banner.jpg')) continue;
         
         const filePath = `${this.cacheDirectory}${file}`;
-        const fileInfo = await FileSystem.getInfoAsync(filePath);
+        const fileInfo = await fileSystem.getInfoAsync(filePath);
         
-        if (fileInfo.exists && fileInfo.size) {
+        if (fileInfo && fileInfo.exists && fileInfo.size) {
           const pubkey = file.replace('_banner.jpg', '');
           
           // Add to access log with current time (conservative approach)
@@ -99,7 +100,7 @@ export class BannerImageCache {
         }
       }
       
-      console.log(`Banner image cache initialized: ${files.length} files, ${(this.cacheSize / (1024 * 1024)).toFixed(2)} MB`);
+      logger.info(`Banner image cache initialized: ${files.length} files, ${(this.cacheSize / (1024 * 1024)).toFixed(2)} MB`);
       
       // If cache is over the limit already, clean it up
       if (this.cacheSize > MAX_CACHE_SIZE) {
@@ -112,7 +113,9 @@ export class BannerImageCache {
       // Also clear old cache based on time
       this.clearOldCache();
     } catch (error) {
-      console.error('Error initializing banner cache metadata:', error);
+      // On web, this might fail but we can continue without caching
+      logger.warn('Error initializing banner cache metadata - using in-memory fallback:', error);
+      this.initialized = true; // Mark as initialized anyway to prevent repeated attempts
     }
   }
   
@@ -134,37 +137,32 @@ export class BannerImageCache {
       // Check if image exists in cache
       const cachedPath = `${this.cacheDirectory}${pubkey}_banner.jpg`;
       logger.debug(`${platformTag} Checking cache at path: ${cachedPath}`);
-      const fileInfo = await FileSystem.getInfoAsync(cachedPath);
       
-      if (fileInfo.exists && fileInfo.size > 0) {
-        // Update access time regardless of whether we'll use it or redownload
-        this.accessLog.set(pubkey, Date.now());
-        logger.info(`${platformTag} Found cached banner image (size: ${fileInfo.size} bytes)`);
+      // Check if we have a cached file
+      try {
+        const fileInfo = await fileSystem.getInfoAsync(cachedPath);
         
-        // Check if cache is fresh (less than 24 hours old)
-        const stats = await FileSystem.getInfoAsync(cachedPath, { md5: false });
-        logger.debug(`${platformTag} Cache file stats: ${JSON.stringify(stats)}`);
-        
-        // Type assertion for modificationTime which might not be in the type definition
-        const modTime = (stats as any).modificationTime || 0;
-        const cacheAge = Date.now() - modTime * 1000;
-        
-        logger.debug(`${platformTag} Cache age: ${(cacheAge / (1000 * 60 * 60)).toFixed(1)} hours, threshold: ${(CACHE_FRESHNESS_MS / (1000 * 60 * 60))} hours`);
-        
-        if (cacheAge < CACHE_FRESHNESS_MS) {
-          logger.info(`${platformTag} Using cached banner image for ${pubkey.substring(0, 8)}...`);
-          // iOS might need a full file:// prefix for the path
-          const fullPath = Platform.OS === 'ios' 
-            ? (cachedPath.startsWith('file://') ? cachedPath : `file://${cachedPath}`)
-            : cachedPath;
+        if (fileInfo && fileInfo.exists) {
+          // Check if cache is stale
+          const modTime = (fileInfo as any).modificationTime || 0;
+          const fileAge = Date.now() - modTime * 1000; // modTime is in seconds
           
-          logger.debug(`${platformTag} Returning cache path: ${fullPath}`);
-          return fullPath;
-        } else {
-          logger.info(`${platformTag} Cached image is stale (${(cacheAge / (1000 * 60 * 60)).toFixed(1)} hours old), will redownload`);
+          // If file is fresh enough, use it right away
+          if (fileAge < CACHE_FRESHNESS_MS) {
+            // Record access
+            this.accessLog.set(pubkey, Date.now());
+            return cachedPath;
+          } else {
+            // Cache exists but is stale - fetch in background but return the cached version right away
+            this.fetchAndCacheBanner(pubkey, fallbackUrl, cachedPath);
+            
+            // Record access
+            this.accessLog.set(pubkey, Date.now());
+            return cachedPath;
+          }
         }
-      } else {
-        logger.info(`${platformTag} No cached banner image found or file is empty`);
+      } catch (error) {
+        logger.warn(`${platformTag} Error checking cached file, will try downloading: ${error}`);
       }
       
       // Before downloading, make sure we have enough space
@@ -173,12 +171,11 @@ export class BannerImageCache {
       // If not in cache or stale, try to get from NDK
       if (this.ndk) {
         logger.info(`${platformTag} Attempting to fetch profile data from NDK`);
-        const user = new NDKUser({ pubkey });
-        user.ndk = this.ndk;
-        
-        // Get profile from NDK cache first
         try {
-          logger.debug(`${platformTag} Fetching profile with CACHE_FIRST strategy`);
+          const user = new NDKUser({ pubkey });
+          user.ndk = this.ndk;
+          
+          // Get profile from NDK cache first
           await user.fetchProfile({ 
             cacheUsage: NDKSubscriptionCacheUsage.CACHE_FIRST 
           });
@@ -190,135 +187,130 @@ export class BannerImageCache {
             hasFallback: !!fallbackUrl
           })}`);
           
-          let imageUrl = user.profile?.banner ||
-                       (user.profile as any)?.background ||
+          const imageUrl = user.profile?.banner || 
+                        (user.profile as any)?.background ||
                         fallbackUrl;
           
           if (imageUrl) {
             logger.info(`${platformTag} Found image URL: ${imageUrl}`);
             try {
-              // Download and cache the image
-              logger.info(`${platformTag} Downloading banner image for ${pubkey.substring(0, 8)}... from ${imageUrl}`);
-              const downloadResult = await FileSystem.downloadAsync(imageUrl, cachedPath);
-              logger.debug(`${platformTag} Download result: ${JSON.stringify({
-                status: downloadResult.status,
-                headers: downloadResult.headers,
-              })}`);
-              
-              // Verify the downloaded file exists and has content
-              if (downloadResult.status === 200) {
-                const fileInfo = await FileSystem.getInfoAsync(cachedPath);
-                logger.debug(`${platformTag} Downloaded file info: ${JSON.stringify(fileInfo)}`);
-                
-                if (fileInfo.exists && fileInfo.size > 0) {
-                  logger.info(`${platformTag} Successfully cached banner image (${(fileInfo.size / 1024).toFixed(1)} KB)`);
-                  
-                  // Update cache metadata
-                  this.accessLog.set(pubkey, Date.now());
-                  this.cacheSize += fileInfo.size;
-                  
-                  // iOS might need a full file:// prefix for the path
-                  const fullPath = Platform.OS === 'ios' 
-                    ? (cachedPath.startsWith('file://') ? cachedPath : `file://${cachedPath}`)
-                    : cachedPath;
-                  
-                  logger.debug(`${platformTag} Returning downloaded image path: ${fullPath}`);
-                  return fullPath;
-                } else {
-                  logger.warn(`${platformTag} Downloaded banner file is empty or missing: ${cachedPath}`);
-                  // Delete the empty file
-                  await FileSystem.deleteAsync(cachedPath, { idempotent: true });
-                  return fallbackUrl;
-                }
-              } else {
-                logger.warn(`${platformTag} Failed to download banner, status: ${downloadResult.status}`);
-                return fallbackUrl;
-              }
+              // Download and cache the image using our platform-agnostic adapter
+              await this.downloadAndCacheImage(imageUrl, cachedPath, pubkey);
+              return cachedPath;
             } catch (downloadError) {
               logger.error(`${platformTag} Error downloading banner: ${downloadError}`);
-              if (downloadError instanceof Error) {
-                logger.error(`${platformTag} Error details: ${downloadError.message}`);
-                logger.debug(`${platformTag} Stack trace: ${downloadError.stack}`);
-              }
-              
-              // Clean up any partial downloads
-              try {
-                const fileInfo = await FileSystem.getInfoAsync(cachedPath);
-                if (fileInfo.exists) {
-                  await FileSystem.deleteAsync(cachedPath, { idempotent: true });
-                  logger.debug(`${platformTag} Cleaned up partial download`);
-                }
-              } catch (cleanupError) {
-                logger.error(`${platformTag} Error cleaning up failed download: ${cleanupError}`);
-              }
               return fallbackUrl;
             }
           } else {
             logger.info(`${platformTag} No banner image URL found in profile`);
+            return fallbackUrl;
           }
         } catch (error) {
-          console.log('Could not fetch profile from cache:', error);
-        }
-        
-        // If not in cache and no fallback, try network
-        if (!fallbackUrl) {
-          logger.info(`${platformTag} No fallback URL provided, trying network fetch as last resort`);
-          try {
-            logger.debug(`${platformTag} Fetching profile with CACHE_FIRST strategy (retry attempt)`);
-            await user.fetchProfile({
-              cacheUsage: NDKSubscriptionCacheUsage.CACHE_FIRST
-            });
-            const imageUrl = user.profile?.banner || (user.profile as any)?.background;
-            
-            if (imageUrl) {
-              logger.info(`${platformTag} Found image URL in second attempt: ${imageUrl}`);
-              // Download and cache the image
-              const downloadResult = await FileSystem.downloadAsync(imageUrl, cachedPath);
-              logger.debug(`${platformTag} Second download result: ${JSON.stringify({
-                status: downloadResult.status,
-                headers: downloadResult.headers,
-              })}`);
-              
-              // Update cache metadata if successful
-              if (downloadResult.status === 200) {
-                const fileInfo = await FileSystem.getInfoAsync(cachedPath);
-                if (fileInfo.exists && fileInfo.size > 0) {
-                  logger.info(`${platformTag} Successfully cached banner in second attempt (${(fileInfo.size / 1024).toFixed(1)} KB)`);
-                  this.accessLog.set(pubkey, Date.now());
-                  this.cacheSize += fileInfo.size;
-                  
-                  // iOS might need a full file:// prefix for the path
-                  const fullPath = Platform.OS === 'ios' 
-                    ? (cachedPath.startsWith('file://') ? cachedPath : `file://${cachedPath}`)
-                    : cachedPath;
-                  
-                  logger.debug(`${platformTag} Returning downloaded image path from second attempt: ${fullPath}`);
-                  return fullPath;
-                } else {
-                  logger.warn(`${platformTag} Second downloaded banner file is empty or missing`);
-                }
-              } else {
-                logger.warn(`${platformTag} Second download attempt failed, status: ${downloadResult.status}`);
-              }
-            } else {
-              logger.info(`${platformTag} No banner URL found in second profile fetch attempt`);
-            }
-          } catch (error) {
-            logger.error(`${platformTag} Error fetching profile from network: ${error}`);
-            if (error instanceof Error) {
-              logger.error(`${platformTag} Error details: ${error.message}`);
-            }
-          }
-        } else {
-          logger.info(`${platformTag} Using fallback URL as last resort: ${fallbackUrl}`);
+          logger.error(`${platformTag} Error fetching profile: ${error}`);
+          return fallbackUrl;
         }
       }
       
-      // Return fallback URL if provided and nothing in cache
+      // Return fallback URL if nothing else works
       return fallbackUrl;
     } catch (error) {
-      console.error('Error getting banner image:', error);
+      logger.error(`${platformTag} Unexpected error in getBannerImageUri: ${error}`);
       return fallbackUrl;
+    }
+  }
+  
+  /**
+   * Fetch and cache a banner image in background
+   */
+  private async fetchAndCacheBanner(pubkey: string, fallbackUrl?: string, cachedPath?: string) {
+    if (!this.ndk) return;
+    
+    try {
+      const user = new NDKUser({ pubkey });
+      user.ndk = this.ndk;
+      
+      await user.fetchProfile({ 
+        cacheUsage: NDKSubscriptionCacheUsage.PREFER_CACHE 
+      });
+      
+      const imageUrl = user.profile?.banner || 
+                     (user.profile as any)?.background ||
+                     fallbackUrl;
+      
+      if (imageUrl && cachedPath) {
+        await this.downloadAndCacheImage(imageUrl, cachedPath, pubkey);
+      }
+    } catch (error) {
+      logger.warn(`${platformTag} Background banner fetch failed: ${error}`);
+    }
+  }
+  
+  /**
+   * Download and cache an image
+   */
+  private async downloadAndCacheImage(url: string, cachedPath: string, pubkey: string) {
+    try {
+      // On web, we need to handle downloading differently
+      if (typeof window !== 'undefined') {
+        // For web, fetch image and convert to blob
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP error, status = ${response.status}`);
+        }
+        
+        const blob = await response.blob();
+        const blobSize = blob.size;
+        
+        // Write blob to our virtual filesystem
+        const reader = new FileReader();
+        reader.readAsDataURL(blob);
+        
+        await new Promise((resolve, reject) => {
+          reader.onloadend = async () => {
+            try {
+              // Save as data URL in our cache
+              if (reader.result) {
+                await fileSystem.writeAsStringAsync(cachedPath, reader.result.toString());
+                
+                // Update cache metadata
+                this.accessLog.set(pubkey, Date.now());
+                this.cacheSize += blobSize;
+                
+                logger.info(`${platformTag} Successfully cached banner image for web (${(blobSize / 1024).toFixed(1)} KB)`);
+                resolve(true);
+              } else {
+                reject(new Error('Failed to read image data'));
+              }
+            } catch (error) {
+              reject(error);
+            }
+          };
+          reader.onerror = reject;
+        });
+        
+        return;
+      }
+      
+      // For native platforms, use downloadAsync directly
+      const downloadResult: any = await fileSystem.writeAsStringAsync(
+        cachedPath, 
+        `fetch:${url}`  // Our adapter should recognize this as a download instruction
+      );
+      
+      // Verify the file exists after download
+      const fileInfo = await fileSystem.getInfoAsync(cachedPath);
+      if (fileInfo && fileInfo.exists && fileInfo.size > 0) {
+        // Update cache metadata
+        this.accessLog.set(pubkey, Date.now());
+        this.cacheSize += fileInfo.size;
+        
+        logger.info(`${platformTag} Successfully cached banner image (${(fileInfo.size / 1024).toFixed(1)} KB)`);
+      } else {
+        throw new Error('Downloaded file is empty or missing');
+      }
+    } catch (error) {
+      logger.error(`${platformTag} Error in downloadAndCacheImage: ${error}`);
+      throw error;
     }
   }
   
@@ -337,15 +329,15 @@ export class BannerImageCache {
       const accessRecords: CacheAccessRecord[] = [];
       
       // Get all cache files with their metadata
-      const files = await FileSystem.readDirectoryAsync(this.cacheDirectory);
+      const files = await fileSystem.readDirectoryAsync(this.cacheDirectory);
       for (const file of files) {
         if (!file.endsWith('_banner.jpg')) continue;
         
         const pubkey = file.replace('_banner.jpg', '');
         const path = `${this.cacheDirectory}${file}`;
-        const fileInfo = await FileSystem.getInfoAsync(path);
+        const fileInfo = await fileSystem.getInfoAsync(path);
         
-        if (fileInfo.exists && fileInfo.size) {
+        if (fileInfo && fileInfo.exists && fileInfo.size) {
           accessRecords.push({
             pubkey,
             path,
@@ -369,16 +361,16 @@ export class BannerImageCache {
         }
         
         try {
-          await FileSystem.deleteAsync(record.path, { idempotent: true });
+          await fileSystem.deleteAsync(record.path, { idempotent: true });
           
           // Update cache metadata
           this.accessLog.delete(record.pubkey);
           freedSpace += record.size;
           removedCount++;
           
-          console.log(`Removed old banner image: ${record.pubkey} (${(record.size / 1024).toFixed(1)} KB)`);
+          logger.info(`Removed old banner image: ${record.pubkey} (${(record.size / 1024).toFixed(1)} KB)`);
         } catch (error) {
-          console.error(`Error removing cache file ${record.path}:`, error);
+          logger.error(`Error removing cache file ${record.path}:`, error);
         }
       }
       
@@ -386,10 +378,10 @@ export class BannerImageCache {
       this.cacheSize -= freedSpace;
       
       if (removedCount > 0) {
-        console.log(`Cleaned up banner image cache: removed ${removedCount} files, freed ${(freedSpace / (1024 * 1024)).toFixed(2)} MB`);
+        logger.info(`Cleaned up banner image cache: removed ${removedCount} files, freed ${(freedSpace / (1024 * 1024)).toFixed(2)} MB`);
       }
     } catch (error) {
-      console.error('Error enforcing cache size limit:', error);
+      logger.warn('Error enforcing cache size limit - not critical:', error);
     }
   }
   
@@ -400,7 +392,7 @@ export class BannerImageCache {
    */
   async clearOldCache(maxAgeDays: number = 7): Promise<void> {
     try {
-      const files = await FileSystem.readDirectoryAsync(this.cacheDirectory);
+      const files = await fileSystem.readDirectoryAsync(this.cacheDirectory);
       const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
       const now = Date.now();
       let clearedCount = 0;
@@ -408,9 +400,9 @@ export class BannerImageCache {
       
       for (const file of files) {
         const filePath = `${this.cacheDirectory}${file}`;
-        const fileInfo = await FileSystem.getInfoAsync(filePath);
+        const fileInfo = await fileSystem.getInfoAsync(filePath);
         
-        if (fileInfo.exists) {
+        if (fileInfo && fileInfo.exists) {
           // Type assertion for modificationTime
           const modTime = (fileInfo as any).modificationTime || 0;
           const fileAge = now - modTime * 1000;
@@ -418,7 +410,7 @@ export class BannerImageCache {
             // Get file size for statistics before deleting
             const size = fileInfo.size || 0;
             
-            await FileSystem.deleteAsync(filePath);
+            await fileSystem.deleteAsync(filePath);
             
             // Update cache metadata
             const pubkey = file.replace('_banner.jpg', '');
@@ -431,9 +423,9 @@ export class BannerImageCache {
         }
       }
       
-      console.log(`Cleared ${clearedCount} old banner images from cache (${(clearedSize / (1024 * 1024)).toFixed(2)} MB)`);
+      logger.info(`Cleared ${clearedCount} old banner images from cache (${(clearedSize / (1024 * 1024)).toFixed(2)} MB)`);
     } catch (error) {
-      console.error('Error clearing old banner cache:', error);
+      logger.warn('Error clearing old banner cache - this is not critical:', error);
     }
   }
   
@@ -443,7 +435,7 @@ export class BannerImageCache {
    */
   async clearCache(): Promise<void> {
     try {
-      await FileSystem.deleteAsync(this.cacheDirectory, { idempotent: true });
+      await fileSystem.deleteAsync(this.cacheDirectory, { idempotent: true });
       await this.ensureCacheDirectoryExists();
       
       // Reset metadata
@@ -451,9 +443,9 @@ export class BannerImageCache {
       this.cacheSize = 0;
       this.initialized = false;
       
-      console.log('Banner image cache cleared');
+      logger.info('Banner image cache cleared');
     } catch (error) {
-      console.error('Error clearing banner cache:', error);
+      logger.error('Error clearing banner cache:', error);
     }
   }
   

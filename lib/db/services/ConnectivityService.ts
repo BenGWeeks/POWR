@@ -177,32 +177,58 @@ export class ConnectivityService {
    */
   private async updateStatusInDatabase(isOnline: boolean): Promise<void> {
     try {
-      const db = openDatabaseSync('powr.db');
+      // Check if we're on web platform
+      const isWeb = typeof document !== 'undefined' && typeof window !== 'undefined';
       
-      // Create the app_status table if it doesn't exist
-      await db.runAsync(`
-        CREATE TABLE IF NOT EXISTS app_status (
-          key TEXT PRIMARY KEY,
-          value TEXT,
-          updated_at INTEGER
-        )
-      `);
+      if (isWeb) {
+        // For web, use localStorage instead of SQLite
+        try {
+          const timestamp = Date.now();
+          const statusData = {
+            online: isOnline,
+            timestamp
+          };
+          
+          // Try to save to localStorage
+          localStorage.setItem('powr_network_status', JSON.stringify(statusData));
+        } catch (webError) {
+          // If localStorage fails, just log it but don't throw
+          // This allows the app to continue working even if storage fails
+          console.log('[ConnectivityService] Could not store status in web storage:', webError);
+        }
+        return;
+      }
       
-      await db.runAsync(
-        `INSERT OR REPLACE INTO app_status (key, value, updated_at)
-         VALUES (?, ?, ?)`,
-        ['online_status', isOnline ? 'online' : 'offline', Date.now()]
-      );
-      
-      // Also store last online time if we're online
-      if (isOnline && this.lastOnlineTime) {
-        await db.runAsync(
-          `INSERT OR REPLACE INTO app_status (key, value, updated_at)
-           VALUES (?, ?, ?)`,
-          ['last_online_time', this.lastOnlineTime.toString(), Date.now()]
+      // For native platforms, use SQLite
+      try {
+        // Open database connection
+        const db = openDatabaseSync('powr.db');
+        
+        // Make sure table exists
+        db.runAsync(`
+          CREATE TABLE IF NOT EXISTS app_status (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        `);
+        
+        // Update network status
+        const timestamp = Date.now();
+        const jsonValue = JSON.stringify({
+          online: isOnline,
+          timestamp
+        });
+        
+        db.runAsync(
+          `INSERT OR REPLACE INTO app_status (key, value, updated_at) VALUES (?, ?, ?)`,
+          ['network_status', jsonValue, timestamp]
         );
+      } catch (sqliteError) {
+        console.warn('[ConnectivityService] Error updating status in SQLite database:', sqliteError);
       }
     } catch (error) {
+      // Catch any unexpected errors but don't break the app
       console.error('[ConnectivityService] Error updating status in database:', error);
     }
   }

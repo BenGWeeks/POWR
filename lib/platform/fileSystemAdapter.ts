@@ -1,6 +1,7 @@
 // lib/platform/fileSystemAdapter.ts
 import * as FileSystem from 'expo-file-system';
-import { createLogger } from '@/lib/utils/logger';
+// Fix the import path for the logger
+import { createLogger } from '../utils/logger';
 import { getPlatform, PlatformConstants, safelyRun } from './index';
 
 const logger = createLogger('FileSystemAdapter');
@@ -87,8 +88,8 @@ export class FileSystemAdapter {
       // On web, simulate directory creation by storing a record
       const key = `${this.storagePrefix}:${path}`;
 
-      if (typeof localStorage !== 'undefined') {
-        try {
+      try {
+        if (this.webStorageAvailable && typeof localStorage !== 'undefined') {
           const dirInfo = {
             isDirectory: true,
             size: 0,
@@ -98,9 +99,20 @@ export class FileSystemAdapter {
 
           localStorage.setItem(key, JSON.stringify(dirInfo));
           logger.debug(`Created virtual directory: ${path}`);
-        } catch (error) {
-          logger.error(`Error creating virtual directory ${path}:`, error);
+        } else {
+          // Use in-memory storage as fallback
+          this.inMemoryStorage.set(key, JSON.stringify({
+            isDirectory: true,
+            size: 0,
+            modificationTime: Date.now() / 1000,
+            children: []
+          }));
+          logger.debug(`Created virtual directory in memory: ${path}`);
         }
+      } catch (error) {
+        logger.warn(`Unable to create virtual directory ${path}, falling back to in-memory only: ${error}`);
+        // Don't throw the error, just log it and continue
+        // This allows the app to continue functioning even if localStorage fails
       }
 
       return;
@@ -110,8 +122,16 @@ export class FileSystemAdapter {
     try {
       await FileSystem.makeDirectoryAsync(path, options);
     } catch (error) {
+      // If directory already exists, don't treat as an error
+      if (error && (error as any).code === 'ERR_FILE_EXISTS') {
+        logger.debug(`Directory already exists: ${path}`);
+        return;
+      }
       logger.error(`Error creating directory ${path}:`, error);
-      throw error;
+      // Don't throw on web platform or during initialization
+      if (!this.isWeb) {
+        throw error;
+      }
     }
   }
 
