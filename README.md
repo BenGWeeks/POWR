@@ -27,6 +27,7 @@ POWR is a local-first fitness tracking application built with React Native and E
 - EAS CLI (`npm install -g eas-cli`)
 - iOS Simulator (for iOS development)
 - Android Studio (for Android development)
+- Expo account for development
 
 ### Installation
 
@@ -45,6 +46,35 @@ npm install
 ```bash
 npx expo install expo-dev-client expo-crypto expo-nip55
 ```
+
+### Developer Configuration
+
+POWR uses environment variables to allow each developer to use their own Expo/EAS account settings:
+
+1. Copy the template environment file
+```bash
+cp .env.example .env.local
+```
+
+2. Edit `.env.local` with your own Expo account settings:
+```
+# Your Expo account owner name
+EXPO_OWNER=your-username
+
+# Your EAS Project ID (from EAS dashboard)
+EXPO_PROJECT_ID=your-project-id
+
+# Update URL for your EAS project
+EXPO_UPDATES_URL=https://u.expo.dev/your-project-id
+
+# Android package name - must be unique to your developer account
+ANDROID_PACKAGE=com.yourusername.powr
+
+# iOS bundle identifier - must be unique to your developer account
+IOS_BUNDLE_ID=com.yourusername.powr
+```
+
+You can find your Project ID in the EAS dashboard after creating a new project.
 
 ### Development Using Expo Dev Client
 
@@ -79,6 +109,7 @@ powr/
 │   ├── (tabs)/          # Tab-based navigation
 │   ├── (workout)/       # Workout screens
 │   └── _layout.tsx      # Root layout
+├── app.config.js        # Dynamic Expo configuration
 ├── components/          # Shared components
 │   ├── ui/              # UI components
 │   ├── sheets/          # Bottom sheets
@@ -100,6 +131,7 @@ powr/
 - TypeScript
 - SQLite (via expo-sqlite)
 - Zustand (state management)
+- dotenv (environment configuration)
 
 ### UI Components
 - NativeWind/Tailwind

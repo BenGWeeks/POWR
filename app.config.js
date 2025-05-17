@@ -1,0 +1,98 @@
+const path = require('path');
+require('dotenv').config({ path: path.resolve(process.cwd(), '.env.local') });
+
+// Default configuration (same as current app.json)
+const config = {
+  name: "powr",
+  slug: "powr",
+  version: "1.0.0",
+  orientation: "portrait",
+  icon: "./assets/images/icon.png",
+  scheme: "myapp",
+  userInterfaceStyle: "automatic",
+  newArchEnabled: true,
+  splash: {
+    image: "./assets/images/splash.png",
+    resizeMode: "contain",
+    backgroundColor: "#000000"
+  },
+  assetBundlePatterns: ["**/*"],
+  ios: {
+    supportsTablet: true,
+    bundleIdentifier: process.env.IOS_BUNDLE_ID || "com.powr.app",
+    infoPlist: {
+      UIFileSharingEnabled: true
+    }
+  },
+  android: {
+    adaptiveIcon: {
+      foregroundImage: "./assets/images/adaptive-icon.png",
+      backgroundColor: "#ffffff"
+    },
+    package: process.env.ANDROID_PACKAGE || "com.powr.app",
+    permissions: [
+      "WRITE_EXTERNAL_STORAGE",
+      "READ_EXTERNAL_STORAGE"
+    ],
+    intentFilters: [
+      {
+        autoVerify: true,
+        action: "VIEW",
+        data: [
+          {
+            scheme: "powr"
+          }
+        ],
+        category: ["BROWSABLE", "DEFAULT"]
+      }
+    ]
+  },
+  web: {
+    bundler: "metro",
+    output: "static",
+    favicon: "./assets/images/favicon.png"
+  },
+  plugins: [
+    "expo-router",
+    "expo-dev-client",
+    [
+      "expo-sqlite",
+      {
+        androidPackage: "expo.modules.sqlite.SQLiteModule",
+        enableChangeListener: false,
+        enableFTS: true,
+        android: {
+          enableFTS: true
+        },
+        ios: {
+          enableFTS: true
+        }
+      }
+    ],
+    "expo-secure-store",
+    "expo-av",
+    "expo-splash-screen"
+  ],
+  experiments: {
+    typedRoutes: true
+  },
+  runtimeVersion: {
+    policy: "sdkVersion"
+  },
+  updates: {
+    url: process.env.EXPO_UPDATES_URL || "https://u.expo.dev/f3895f49-d9c9-4653-b73b-356f727debe2"
+  },
+  extra: {
+    router: {
+      origin: false
+    },
+    eas: {
+      projectId: process.env.EXPO_PROJECT_ID || "f3895f49-d9c9-4653-b73b-356f727debe2"
+    }
+  },
+  owner: process.env.EXPO_OWNER || "promotus"
+};
+
+module.exports = {
+  expo: config
+};
