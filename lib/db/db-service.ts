@@ -1,14 +1,16 @@
 // lib/db/db-service.ts
-import { SQLiteDatabase } from 'expo-sqlite';
+import { Database } from 'expo-sqlite-next';
 import { createLogger } from '@/lib/utils/logger';
+import { Platform } from 'react-native';
 
 // Create database-specific logger
 const logger = createLogger('SQLite');
 
 export class DbService {
-  private db: SQLiteDatabase;
+  private db: Database;
+  private isWeb: boolean = Platform.OS === 'web';
 
-  constructor(db: SQLiteDatabase) {
+  constructor(db: Database) {
     this.db = db;
   }
 

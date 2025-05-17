@@ -1,7 +1,9 @@
 // components/DatabaseProvider.tsx
 import React from 'react';
 import { View, ActivityIndicator, ScrollView, Text } from 'react-native';
-import { SQLiteProvider, openDatabaseSync, SQLiteDatabase } from 'expo-sqlite';
+import { Platform } from 'react-native';
+// Import from expo-sqlite-next which works on both web and native
+import { openDatabaseSync, type Database } from 'expo-sqlite-next';
 import { schema } from '@/lib/db/schema';
 import { ExerciseService } from '@/lib/db/services/ExerciseService';
 import { PublicationQueueService } from '@/lib/db/services/PublicationQueueService';
@@ -26,7 +28,7 @@ interface DatabaseServicesContextValue {
   publicationQueue: PublicationQueueService | null;
   favoritesService: FavoritesService | null;
   powrPackService: POWRPackService | null;
-  db: SQLiteDatabase | null;
+  db: Database | null;
 }
 
 const DatabaseServicesContext = React.createContext<DatabaseServicesContextValue>({
@@ -139,7 +141,7 @@ export function DatabaseProvider({ children }: DatabaseProviderProps) {
         await schema.ensureCriticalTablesExist(db);
         
         // Run migrations with robust error handling
-        const runMigration = async (version: string, migrationFn: (db: SQLiteDatabase) => Promise<void>) => {
+        const runMigration = async (version: string, migrationFn: (db: Database) => Promise<void>) => {
           try {
             await migrationFn(db);
             console.log(`[DB] Migration ${version} executed successfully`);
@@ -282,13 +284,11 @@ export function DatabaseProvider({ children }: DatabaseProviderProps) {
   }
 
   return (
-    <SQLiteProvider databaseName="powr.db">
-      <DatabaseServicesContext.Provider value={services}>
-        <DelayedInitializer>
-          {children}
-        </DelayedInitializer>
-      </DatabaseServicesContext.Provider>
-    </SQLiteProvider>
+    <DatabaseServicesContext.Provider value={services}>
+      <DelayedInitializer>
+        {children}
+      </DelayedInitializer>
+    </DatabaseServicesContext.Provider>
   );
 }
 

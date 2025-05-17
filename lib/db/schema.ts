@@ -1,5 +1,5 @@
 // lib/db/schema.ts
-import { SQLiteDatabase } from 'expo-sqlite';
+import { Database } from 'expo-sqlite-next';
 import { Platform } from 'react-native';
 // Import the migration functions directly to avoid dynamic imports that can fail on Android
 import { addNostrFieldsToWorkouts, createNostrWorkoutsTable } from './migrations/add-nostr-fields-to-workouts';
@@ -7,7 +7,7 @@ import { addNostrFieldsToWorkouts, createNostrWorkoutsTable } from './migrations
 export const SCHEMA_VERSION = 12;
 
 class Schema {
-  private async getCurrentVersion(db: SQLiteDatabase): Promise<number> {
+  private async getCurrentVersion(db: Database): Promise<number> {
     try {
       const tableExists = await db.getFirstAsync<{ count: number }>(
         `SELECT count(*) as count FROM sqlite_master 
@@ -32,7 +32,7 @@ class Schema {
   }
 
   // Version 8 migration - add template archive and author pubkey
-  async migrate_v8(db: SQLiteDatabase): Promise<void> {
+  async migrate_v8(db: Database): Promise<void> {
     try {
       console.log('[Schema] Running migration v8 - Template management');
       
@@ -62,7 +62,7 @@ class Schema {
     }
   }
 
-  async migrate_v9(db: SQLiteDatabase): Promise<void> {
+  async migrate_v9(db: Database): Promise<void> {
     try {
       console.log('[Schema] Running migration v9 - Enhanced Nostr metadata');
       
@@ -105,7 +105,7 @@ class Schema {
     }
   }
 
-  async migrate_v10(db: SQLiteDatabase): Promise<void> {
+  async migrate_v10(db: Database): Promise<void> {
     try {
       console.log('[Schema] Running migration v10 - Adding Favorites table');
       
@@ -130,7 +130,7 @@ class Schema {
     }
   }
   
-  async migrate_v11(db: SQLiteDatabase): Promise<void> {
+  async migrate_v11(db: Database): Promise<void> {
     try {
       console.log('[Schema] Running migration v11 - Adding Nostr fields to workouts');
       
@@ -145,7 +145,7 @@ class Schema {
     }
   }
   
-  async migrate_v12(db: SQLiteDatabase): Promise<void> {
+  async migrate_v12(db: Database): Promise<void> {
     try {
       console.log('[Schema] Running migration v12 - Adding Contact Cache table');
       
@@ -169,7 +169,7 @@ class Schema {
     }
   }
   
-  async addContactCacheTable(db: SQLiteDatabase): Promise<void> {
+  async addContactCacheTable(db: Database): Promise<void> {
     try {
       console.log('[Schema] Running migration v12 - Adding Contact Cache table');
       
@@ -194,7 +194,7 @@ class Schema {
   }
 
   // Method specifically for Android database initialization
-  async createTablesAndroid(db: SQLiteDatabase): Promise<void> {
+  async createTablesAndroid(db: Database): Promise<void> {
     try {
       console.log('[Schema] Using Android-specific database initialization');
       
@@ -481,7 +481,7 @@ class Schema {
     }
   }
 
-  async createTables(db: SQLiteDatabase): Promise<void> {
+  async createTables(db: Database): Promise<void> {
     try {
       console.log(`[Schema] Initializing database on ${Platform.OS}`);
       
@@ -609,7 +609,7 @@ class Schema {
     }
   }
 
-  private async createAllTables(db: SQLiteDatabase): Promise<void> {
+  private async createAllTables(db: Database): Promise<void> {
     try {
       console.log('[Schema] Creating all database tables...');
       
@@ -763,7 +763,7 @@ class Schema {
     }
   }
 
-  async ensureCriticalTablesExist(db: SQLiteDatabase): Promise<void> {
+  async ensureCriticalTablesExist(db: Database): Promise<void> {
     try {
       console.log('[Schema] Checking for missing critical tables...');
       
@@ -914,7 +914,7 @@ class Schema {
     }
   }
 
-  private async dropAllTables(db: SQLiteDatabase): Promise<void> {
+  private async dropAllTables(db: Database): Promise<void> {
     try {
       console.log('[Schema] Getting list of tables to drop...');
       
@@ -941,7 +941,7 @@ class Schema {
     }
   }
   
-  private async updateSchemaVersion(db: SQLiteDatabase): Promise<void> {
+  private async updateSchemaVersion(db: Database): Promise<void> {
     try {
       console.log(`[Schema] Updating schema version to ${SCHEMA_VERSION}`);
       
@@ -961,7 +961,7 @@ class Schema {
     }
   }
   
-  async resetDatabaseCompletely(db: SQLiteDatabase): Promise<void> {
+  async resetDatabaseCompletely(db: Database): Promise<void> {
     if (!__DEV__) {
       console.log('[Schema] Database reset is only available in development mode');
       return;
