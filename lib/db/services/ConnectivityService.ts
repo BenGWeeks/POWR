@@ -95,29 +95,11 @@ export class ConnectivityService {
       // Perform a more thorough check if NetInfo says we're connected
       let isReachable = state.isConnected === true && state.isInternetReachable !== false;
       
-      // If NetInfo says we're connected, do an additional check with a fetch request
+      // For web platforms, we'll trust NetInfo's result without a secondary fetch check
+      // This avoids CORS issues with external connectivity check endpoints
       if (isReachable) {
-        try {
-          // Try to fetch a small resource with a timeout
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 5000);
-          
-          // Use a reliable endpoint that should always be available
-          const response = await fetch('https://www.google.com/generate_204', {
-            method: 'HEAD',
-            signal: controller.signal,
-            cache: 'no-cache',
-          });
-          
-          clearTimeout(timeoutId);
-          
-          // If we get a response, we're definitely online
-          isReachable = response.status === 204 || response.ok;
-        } catch (fetchError) {
-          // If the fetch fails, we might not have real connectivity
-          console.log('[ConnectivityService] Fetch check failed:', fetchError);
-          isReachable = false;
-        }
+        // Log connectivity status
+        console.log('[ConnectivityService] NetInfo reports device is connected');
       }
       
       const previousStatus = this.isOnline;
