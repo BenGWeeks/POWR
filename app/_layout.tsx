@@ -245,7 +245,7 @@ export default function RootLayout() {
           <ThemeProvider value={isDarkColorScheme ? DARK_THEME : LIGHT_THEME}>
             <SettingsDrawerProvider>
               {/* Conditionally render authentication providers based on feature flag */}
-              {FLAGS.useReactQueryAuth ? (
+              {(FLAGS && FLAGS.useReactQueryAuth) ? (
                 /* Use React Query Auth system */
                 <ReactQueryAuthProvider enableNDK={true} queryClient={queryClient}>
                   {/* React Query specific components */}

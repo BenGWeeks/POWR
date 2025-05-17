@@ -1,4 +1,10 @@
 // lib/stores/ndk.ts
+
+// Feature flags for the application
+export const FLAGS = {
+  // Flag to toggle between React Query Auth system and legacy auth
+  useReactQueryAuth: false,
+};
 import 'react-native-get-random-values';
 import { create } from 'zustand';
 import NDK, { 
