@@ -1,6 +1,9 @@
 import * as FileSystem from 'expo-file-system';
 import NDK, { NDKUser, NDKSubscriptionCacheUsage } from '@nostr-dev-kit/ndk-mobile';
 import * as Crypto from 'expo-crypto';
+import { Platform } from 'react-native';
+import { isWeb, WebStorage, InMemoryStorage } from '@/lib/platform/webFallbacks';
+import { createLogger } from '@/lib/utils/logger';
 
 // Constants for cache management
 const MAX_CACHE_SIZE = 50 * 1024 * 1024; // 50MB limit for profile images
@@ -24,16 +27,82 @@ interface CacheAccessRecord {
  * - Size-based limits (50MB max)
  * - Usage tracking for intelligent cleanup
  */
+// Create a logger instance
+const logger = createLogger('ProfileImageCache');
+
 export class ProfileImageCache {
   private cacheDirectory: string;
   private ndk: NDK | null = null;
   private accessLog: Map<string, number> = new Map(); // Track last access times
   private cacheSize: number = 0; // Track total cache size
   private initialized: boolean = false;
+  private webCache: Map<string, string> = new Map(); // In-memory cache for web platform
   
   constructor() {
-    this.cacheDirectory = `${FileSystem.cacheDirectory}profile-images/`;
-    this.ensureCacheDirectoryExists();
+    // Set cache directory for native platforms
+    this.cacheDirectory = isWeb 
+      ? '' // Web platform doesn't use FileSystem
+      : `${FileSystem.cacheDirectory}profile-images/`;
+    
+    // Initialize the cache based on platform
+    if (!isWeb) {
+      this.ensureCacheDirectoryExists();
+    } else {
+      // For web, we'll try to load any previously stored cache from localStorage
+      this.initializeWebCache();
+      this.initialized = true;
+    }
+  }
+  
+  /**
+   * Initialize the web cache from localStorage if available
+   * @private
+   */
+  private initializeWebCache() {
+    if (!isWeb) return;
+    
+    try {
+      // Try to load cached URLs from localStorage
+      const cachedData = WebStorage.getItem('profile-image-cache');
+      if (cachedData) {
+        const parsed = JSON.parse(cachedData);
+        
+        // Rebuild the cache from the stored data
+        if (parsed && typeof parsed === 'object') {
+          Object.entries(parsed).forEach(([pubkey, url]) => {
+            if (typeof url === 'string') {
+              this.webCache.set(pubkey, url);
+              this.accessLog.set(pubkey, Date.now());
+            }
+          });
+        }
+        
+        logger.debug(`Loaded ${this.webCache.size} profile images from web cache`);
+      }
+    } catch (error) {
+      logger.warn('Failed to load web cache from localStorage:', error);
+    }
+  }
+  
+  /**
+   * Save the web cache to localStorage
+   * @private
+   */
+  private saveWebCache() {
+    if (!isWeb) return;
+    
+    try {
+      // Create a simple object from the Map for storage
+      const cacheObject: Record<string, string> = {};
+      this.webCache.forEach((url, pubkey) => {
+        cacheObject[pubkey] = url;
+      });
+      
+      // Store in localStorage
+      WebStorage.setItem('profile-image-cache', JSON.stringify(cacheObject));
+    } catch (error) {
+      logger.warn('Failed to save web cache to localStorage:', error);
+    }
   }
   
   /**
@@ -54,14 +123,16 @@ export class ProfileImageCache {
    * @private
    */
   private async ensureCacheDirectoryExists() {
+    if (isWeb) return; // No need on web platform
+    
     try {
       const dirInfo = await FileSystem.getInfoAsync(this.cacheDirectory);
       if (!dirInfo.exists) {
         await FileSystem.makeDirectoryAsync(this.cacheDirectory, { intermediates: true });
-        console.log(`Created profile image cache directory: ${this.cacheDirectory}`);
+        logger.debug(`Created profile image cache directory: ${this.cacheDirectory}`);
       }
     } catch (error) {
-      console.error('Error creating cache directory:', error);
+      logger.error('Error creating cache directory:', error);
     }
   }
   
@@ -147,84 +218,128 @@ export class ProfileImageCache {
    * @returns Promise with the cached image URI or fallback URL
    */
   async getProfileImageUri(pubkey?: string, fallbackUrl?: string): Promise<string | undefined> {
+    if (!pubkey) return fallbackUrl;
+    
+    // Handle differently based on platform
+    if (isWeb) {
+      return this.getWebProfileImageUri(pubkey, fallbackUrl);
+    } else {
+      return this.getNativeProfileImageUri(pubkey, fallbackUrl);
+    }
+  }
+  
+  /**
+   * Get profile image for web platform
+   * @private
+   */
+  private async getWebProfileImageUri(pubkey: string, fallbackUrl?: string): Promise<string | undefined> {
     try {
-      if (!pubkey) {
-        return fallbackUrl;
+      // Check if we already have a cached URL in memory
+      if (this.webCache.has(pubkey)) {
+        // Update access time
+        this.accessLog.set(pubkey, Date.now());
+        return this.webCache.get(pubkey);
       }
       
-      // Check if image exists in cache
-      const cachedPath = `${this.cacheDirectory}${pubkey}.jpg`;
-      const fileInfo = await FileSystem.getInfoAsync(cachedPath);
-      
-      if (fileInfo.exists && fileInfo.size > 0) {
-        // Update access time regardless of whether we'll use it or redownload
-        this.accessLog.set(pubkey, Date.now());
+      // Try to fetch the profile to get the image URL
+      if (this.ndk) {
+        const user = this.ndk.getUser({ pubkey });
         
-        // Check if cache is fresh (less than 24 hours old)
-        const stats = await FileSystem.getInfoAsync(cachedPath, { md5: false });
-        // Type assertion for modificationTime which might not be in the type definition
-        const modTime = (stats as any).modificationTime || 0;
-        const cacheAge = Date.now() - modTime * 1000;
-        
-        if (cacheAge < CACHE_FRESHNESS_MS) {
-          console.log(`Using cached profile image for ${pubkey}`);
-          return cachedPath;
+        try {
+          // Attempt to fetch the profile
+          await user.fetchProfile();
+          
+          if (user.profile?.image) {
+            const imageUrl = user.profile.image;
+            
+            // Store in our web cache
+            this.webCache.set(pubkey, imageUrl);
+            this.accessLog.set(pubkey, Date.now());
+            
+            // Persist to localStorage
+            this.saveWebCache();
+            
+            return imageUrl;
+          }
+        } catch (profileError) {
+          logger.warn(`Failed to fetch profile for ${pubkey}:`, profileError);
         }
       }
       
-      // Before downloading, make sure we have enough space
-      await this.enforceSizeLimit();
+      // If we reach here, return the fallback
+      return fallbackUrl;
+    } catch (error) {
+      logger.error('Error in getWebProfileImageUri:', error);
+      return fallbackUrl;
+    }
+  }
+  
+  /**
+   * Get profile image for native platforms
+   * @private
+   */
+  private async getNativeProfileImageUri(pubkey: string, fallbackUrl?: string): Promise<string | undefined> {
+    try {
+      // Check if we already have a cached image
+      const cachedImagePath = `${this.cacheDirectory}${pubkey}.jpg`;
+      const fileInfo = await FileSystem.getInfoAsync(cachedImagePath);
       
-      // If not in cache or stale, try to get from NDK
-      if (this.ndk) {
-        const user = new NDKUser({ pubkey });
-        user.ndk = this.ndk;
+      // If image exists and is not too old, return it
+      if (fileInfo.exists) {
+        // Update access log
+        this.accessLog.set(pubkey, Date.now());
         
-        // Get profile from NDK cache first
+        // Type assertion for modification time
+        const modTime = (fileInfo as any).modificationTime || 0;
+        const fileAge = Date.now() - modTime * 1000;
+        
+        if (fileAge < CACHE_FRESHNESS_MS) {
+          return cachedImagePath;
+        }
+        
+        // Image exists but is old - we'll still use it but also try to refresh
+        logger.debug(`Profile image for ${pubkey} is old (${Math.round(fileAge / (1000 * 60 * 60))} hours), refreshing...`);
+      }
+      
+      // If we have NDK, try to fetch the profile picture URL
+      if (this.ndk) {
+        // First check if we have a URL already
+        let user = this.ndk.getUser({ pubkey });
+        
         try {
-          await user.fetchProfile({ 
-            cacheUsage: NDKSubscriptionCacheUsage.CACHE_FIRST 
-          });
-          let imageUrl = user.profile?.image || user.profile?.picture || fallbackUrl;
+          // Attempt to fetch the profile with cache usage
+          await user.fetchProfile();
           
-          if (imageUrl) {
+          if (user.profile?.image) {
+            const imageUrl = user.profile.image;
+            
             try {
-              // Download and cache the image
-              console.log(`Downloading profile image for ${pubkey} from ${imageUrl}`);
-              const downloadResult = await FileSystem.downloadAsync(imageUrl, cachedPath);
+              // Download the image to cache
+              const downloadResult = await FileSystem.downloadAsync(
+                imageUrl,
+                cachedImagePath
+              );
               
-              // Verify the downloaded file exists and has content
               if (downloadResult.status === 200) {
-                const fileInfo = await FileSystem.getInfoAsync(cachedPath);
-                if (fileInfo.exists && fileInfo.size > 0) {
-                  console.log(`Successfully cached profile image for ${pubkey} (${(fileInfo.size / 1024).toFixed(1)} KB)`);
+                logger.debug(`Downloaded profile image for ${pubkey}`);
+                
+                // Get file info to update cache size
+                const newFileInfo = await FileSystem.getInfoAsync(cachedImagePath);
+                if (newFileInfo.exists && newFileInfo.size) {
+                  // Check if we need to enforce size limits
+                  this.cacheSize += newFileInfo.size;
+                  if (this.cacheSize > MAX_CACHE_SIZE) {
+                    this.enforceSizeLimit();
+                  }
                   
-                  // Update cache metadata
+                  // Update access log
                   this.accessLog.set(pubkey, Date.now());
-                  this.cacheSize += fileInfo.size;
-                  return cachedPath;
-                } else {
-                  console.warn(`Downloaded image file is empty or missing: ${cachedPath}`);
-                  // Delete the empty file
-                  await FileSystem.deleteAsync(cachedPath, { idempotent: true });
-                  return fallbackUrl;
                 }
-              } else {
-                console.warn(`Failed to download image from ${imageUrl}, status: ${downloadResult.status}`);
-                return fallbackUrl;
+                
+                return cachedImagePath;
               }
             } catch (downloadError) {
-              console.warn(`Error downloading image from ${imageUrl}:`, downloadError);
-              // Clean up any partial downloads
-              try {
-                const fileInfo = await FileSystem.getInfoAsync(cachedPath);
-                if (fileInfo.exists) {
-                  await FileSystem.deleteAsync(cachedPath, { idempotent: true });
-                }
-              } catch (cleanupError) {
-                console.error('Error cleaning up failed download:', cleanupError);
-              }
-              return fallbackUrl;
+              logger.error(`Error downloading profile image for ${pubkey}:`, downloadError);
             }
           }
         } catch (error) {
@@ -241,18 +356,19 @@ export class ProfileImageCache {
             
             if (imageUrl) {
               // Download and cache the image
-              console.log(`Downloading profile image for ${pubkey} from ${imageUrl}`);
-              const downloadResult = await FileSystem.downloadAsync(imageUrl, cachedPath);
+              const cachedImagePath = `${this.cacheDirectory}${pubkey}.jpg`;
+              logger.debug(`Downloading profile image for ${pubkey} from ${imageUrl}`);
+              const downloadResult = await FileSystem.downloadAsync(imageUrl, cachedImagePath);
               
               // Update cache metadata if successful
               if (downloadResult.status === 200) {
-                const fileInfo = await FileSystem.getInfoAsync(cachedPath);
+                const fileInfo = await FileSystem.getInfoAsync(cachedImagePath);
                 if (fileInfo.exists && fileInfo.size > 0) {
                   this.accessLog.set(pubkey, Date.now());
                   this.cacheSize += fileInfo.size;
                 }
               }
-              return cachedPath;
+              return cachedImagePath;
             }
           } catch (error) {
             console.error('Error fetching profile from network:', error);
@@ -388,6 +504,15 @@ export class ProfileImageCache {
    * @returns Promise that resolves when clearing is complete
    */
   async clearCache(): Promise<void> {
+    if (isWeb) {
+      // For web, just clear the in-memory cache and localStorage
+      this.webCache.clear();
+      this.accessLog.clear();
+      WebStorage.removeItem('profile-image-cache');
+      logger.debug('Web profile image cache cleared');
+      return;
+    }
+    
     try {
       await FileSystem.deleteAsync(this.cacheDirectory, { idempotent: true });
       await this.ensureCacheDirectoryExists();
@@ -397,9 +522,9 @@ export class ProfileImageCache {
       this.cacheSize = 0;
       this.initialized = false;
       
-      console.log('Profile image cache cleared');
+      logger.debug('Profile image cache cleared');
     } catch (error) {
-      console.error('Error clearing cache:', error);
+      logger.error('Error clearing cache:', error);
     }
   }
   
@@ -408,6 +533,14 @@ export class ProfileImageCache {
    * @returns Object with cache statistics
    */
   async getCacheStats() {
+    if (isWeb) {
+      return {
+        size: 0, // Not applicable on web
+        itemCount: this.webCache.size,
+        directory: 'web-storage'
+      };
+    }
+    
     return {
       size: this.cacheSize,
       itemCount: this.accessLog.size,

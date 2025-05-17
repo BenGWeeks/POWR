@@ -9,16 +9,11 @@ import NDK, {
   NDKSigner
 } from '@nostr-dev-kit/ndk-mobile';
 import { generateSecretKey, getPublicKey, nip19 } from 'nostr-tools';
+import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import { RelayService } from '@/lib/db/services/RelayService';
-import { AuthService } from '@/lib/auth/AuthService';
-
+import { getCredentialWithFallback } from '@/lib/auth/persistence/secureStorage';
 import { SECURE_STORE_KEYS } from '@/lib/auth/constants';
-
-// Feature flags for authentication systems
-export const FLAGS = {
-  useReactQueryAuth: false, // When true, use React Query auth; when false, use legacy auth
-};
+import { PlatformConstants } from '@/lib/platform';
 
 // Constants for SecureStore
 const PRIVATE_KEY_STORAGE_KEY = SECURE_STORE_KEYS.PRIVATE_KEY;
@@ -46,6 +41,7 @@ type NDKStoreActions = {
   login: (privateKey?: string) => Promise<boolean>;
   loginWithExternalSigner: (pubkey: string, packageName: string) => Promise<boolean>;
   logout: () => Promise<void>;
+  autoRestoreCredentials: () => Promise<boolean>;
   generateKeys: () => { privateKey: string; publicKey: string; nsec: string; npub: string };
   publishEvent: (kind: number, content: string, tags: string[][]) => Promise<NDKEvent | null>;
   fetchUserProfile: (pubkey: string) => Promise<NDKUser | null>;
@@ -81,9 +77,21 @@ export const useNDKStore = create<NDKStoreState & NDKStoreActions>((set, get) =>
       console.log('[NDK] Initializing...');
       set({ isLoading: true, error: null });
 
+      // Check if we're on web and adjust settings accordingly
+      const isWeb = PlatformConstants.isWeb;
+      if (isWeb) {
+        console.log('[NDK] Web platform detected, using web-compatible settings');
+      }
+
       // Initialize NDK with relays
       const ndk = new NDK({
-        explicitRelayUrls: DEFAULT_RELAYS
+        explicitRelayUrls: DEFAULT_RELAYS,
+        enableOutboxModel: isWeb, // Use outbox model for web to avoid websocket compatibility issues
+        // Add web-specific options to improve reliability
+        ...(isWeb ? { 
+          connectionTimeout: 5000,
+          explicitRelayUrls: DEFAULT_RELAYS.slice(0, 3) // Use fewer relays on web to avoid connection issues
+        } : {})
       });
       
       // Setup relay status tracking
@@ -92,321 +100,168 @@ export const useNDKStore = create<NDKStoreState & NDKStoreActions>((set, get) =>
         relayStatus[url] = 'connecting';
       });
       
-      // Monitor relay connections
-      ndk.pool.on('relay:connect', (relay: NDKRelay) => {
-        console.log(`[NDK] Relay connected: ${relay.url}`);
-        set(state => ({
-          relayStatus: {
-            ...state.relayStatus,
-            [relay.url]: 'connected'
-          }
-        }));
-      });
-      
-      ndk.pool.on('relay:disconnect', (relay: NDKRelay) => {
-        console.log(`[NDK] Relay disconnected: ${relay.url}`);
-        set(state => ({
-          relayStatus: {
-            ...state.relayStatus,
-            [relay.url]: 'disconnected'
-          }
-        }));
-      });
-      
-      await ndk.connect();
-      
-      // Set NDK in services
-      const { profileImageCache } = require('@/lib/db/services/ProfileImageCache');
-      profileImageCache.setNDK(ndk);
-      
-      // Note: SocialFeedCache initialization is now handled in the RelayInitializer component
-      // This avoids using React hooks outside of component context
-      
+      // Set NDK instance early so we can use it even if connections fail
       set({ ndk, relayStatus });
       
-      // Authentication initialization:
-      // Use React Query auth when enabled by feature flag, otherwise use legacy approach
-      if (FLAGS.useReactQueryAuth) {
-        console.log('[NDK] Using React Query authentication system');
-        // The AuthService will handle loading saved credentials
-        // This is just to initialize the NDK store state, actual auth will be handled by AuthProvider
-        // component using the AuthService
-        const authService = new AuthService(ndk);
+      try {
+        // Add listeners first so we can track connection status
+        ndk.pool.on('relay:connect', (relay: NDKRelay) => {
+          console.log(`[NDK] Relay connected: ${relay.url}`);
+          set(state => ({
+            relayStatus: {
+              ...state.relayStatus,
+              [relay.url]: 'connected'
+            }
+          }));
+        });
         
-        // We don't call authService.initialize() here because that should be done
-        // by the AuthProvider to avoid duplicate initialization
-      } else {
-        console.log('[NDK] Using legacy authentication system');
-        // Legacy: Check for saved private key
-        const privateKeyHex = await SecureStore.getItemAsync(PRIVATE_KEY_STORAGE_KEY);
-        if (privateKeyHex) {
-          console.log('[NDK] Found saved private key, initializing signer');
-          
-          try {
-            await get().login(privateKeyHex);
-          } catch (error) {
-            console.error('[NDK] Error initializing with saved key:', error);
-            // Remove invalid key
-            await SecureStore.deleteItemAsync(PRIVATE_KEY_STORAGE_KEY);
-          }
+        ndk.pool.on('relay:disconnect', (relay: NDKRelay) => {
+          console.log(`[NDK] Relay disconnected: ${relay.url}`);
+          set(state => ({
+            relayStatus: {
+              ...state.relayStatus,
+              [relay.url]: 'disconnected'
+            }
+          }));
+        });
+        
+        // Connect to relays
+        if (!isWeb) {
+          // On native, we always try to connect
+          await ndk.connect();
+          console.log('[NDK] Connected to relays');
+        } else {
+          // On web, try to connect with a timeout to avoid hanging
+          const connectPromise = ndk.connect();
+          const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 5000));
+          await Promise.race([connectPromise, timeoutPromise]);
+          console.log('[NDK] Attempted to connect to relays (web platform)');
         }
+
+        // Attempt to restore user session
+        await get().autoRestoreCredentials();
+      } catch (connectionError) {
+        // On connection errors, we still want to keep the NDK instance
+        console.warn('[NDK] Error connecting to relays:', connectionError);
+        // But we update the error state
+        set({ 
+          error: connectionError instanceof Error 
+            ? connectionError 
+            : new Error('Failed to connect to relays')
+        });
       }
 
       set({ isLoading: false });
     } catch (error) {
       console.error('[NDK] Initialization error:', error);
-      set({ 
-        error: error instanceof Error ? error : new Error('Failed to initialize NDK'),
-        isLoading: false
-      });
+      set({ error: error instanceof Error ? error : new Error('Failed to initialize NDK'), isLoading: false });
     }
   },
   
-  loginWithExternalSigner: async (pubkey: string, packageName: string) => {
-    set({ isLoading: true, error: null });
-    console.log('[NDK] Login attempt with external signer starting');
-    
+  autoRestoreCredentials: async () => {
+    console.log('[NDK] Attempting to restore credentials');
     try {
-      // Lazy-load the NDKAmberSigner to avoid circular dependencies
-      const { default: NDKAmberSigner } = await import('@/lib/signers/NDKAmberSigner');
-      
       const { ndk } = get();
       if (!ndk) {
-        console.log('[NDK] Error: NDK not initialized');
-        throw new Error('NDK not initialized');
+        console.warn('[NDK] No NDK instance available');
+        return false;
       }
       
-      console.log('[NDK] Creating Amber signer with pubkey:', pubkey.substring(0, 8) + '...');
+      // Check for stored private key
+      const privateKeyHex = await getCredentialWithFallback(
+        PRIVATE_KEY_STORAGE_KEY,
+        ['powr.private_key', 'nostr_privkey']
+      );
       
-      // Create Amber signer instance
-      const signer = new NDKAmberSigner(pubkey, packageName);
-      console.log('[NDK] External signer created, setting on NDK');
-      ndk.signer = signer;
-      
-      // Get user
-      console.log('[NDK] Getting user from external signer');
-      const user = await ndk.signer.user();
-      if (!user) {
-        console.log('[NDK] Error: Could not get user from signer');
-        throw new Error('Could not get user from signer');
-      }
-      
-      console.log('[NDK] User retrieved with external signer, pubkey:', 
-        user.pubkey ? user.pubkey.substring(0, 8) + '...' : 'undefined');
-      
-      // Fetch user profile
-      console.log('[NDK] Fetching user profile');
-      try {
-        await user.fetchProfile();
-        console.log('[NDK] Profile fetched successfully');
-      } catch (profileError) {
-        console.warn('[NDK] Warning: Could not fetch user profile:', profileError);
-        // Continue even if profile fetch fails
-      }
-      
-      // Process profile data
-      if (user.profile) {
-        console.log('[NDK] Profile data available');
-        if (!user.profile.image && (user.profile as any).picture) {
-          user.profile.image = (user.profile as any).picture;
-          console.log('[NDK] Set image from picture property');
-        }
-        
-        console.log('[NDK] User profile loaded with external signer:', 
-          user.profile.name || user.profile.displayName || 'No name available');
+      if (privateKeyHex) {
+        console.log('[NDK] Found stored credentials, attempting login');
+        return await get().login(privateKeyHex);
       } else {
-        console.log('[NDK] No profile data available');
-      }
-      
-      // Store the external signer association info
-      await SecureStore.setItemAsync('nostr_external_signer', JSON.stringify({
-        type: 'amber',
-        pubkey,
-        packageName
-      }));
-      
-      // Import user relay preferences if available
-      try {
-        console.log('[NDK] Creating RelayService to import user preferences');
-        const relayService = new RelayService();
-        relayService.setNDK(ndk as any);
+        console.log('[NDK] No stored credentials found');
         
-        if (user.pubkey) {
-          console.log('[NDK] Importing relay metadata for user:', user.pubkey.substring(0, 8) + '...');
-          try {
-            await relayService.importFromUserMetadata(user.pubkey, ndk);
-            console.log('[NDK] Successfully imported user relay preferences');
-          } catch (importError) {
-            console.warn('[NDK] Could not import user relay preferences:', importError);
+        // Try legacy authentication system if no credentials found via main method
+        try {
+          console.log('[NDK] Using legacy authentication system');
+          // Legacy: Check for saved private key
+          const legacyKeyHex = await SecureStore.getItemAsync(PRIVATE_KEY_STORAGE_KEY);
+          if (legacyKeyHex) {
+            console.log('[NDK] Found saved private key, initializing signer');
+            
+            try {
+              await get().login(legacyKeyHex);
+              return true;
+            } catch (error) {
+              console.error('[NDK] Error initializing with saved key:', error);
+              // Remove invalid key
+              await SecureStore.deleteItemAsync(PRIVATE_KEY_STORAGE_KEY);
+            }
           }
+        } catch (legacyError) {
+          console.warn('[NDK] Legacy auth system failed:', legacyError);
         }
-      } catch (relayError) {
-        console.error('[NDK] Error with RelayService:', relayError);
+        
+        return false;
       }
-      
-      console.log('[NDK] External signer login successful, updating state');
-      set({ 
-        currentUser: user,
-        isAuthenticated: true,
-        isLoading: false
-      });
-      
-      console.log('[NDK] External signer login complete');
-      return true;
     } catch (error) {
-      console.error('[NDK] External signer login error:', error);
-      set({
-        error: error instanceof Error ? error : new Error('Failed to login with external signer'),
-        isLoading: false
-      });
+      console.warn('[NDK] Failed to restore credentials:', error);
       return false;
     }
   },
   
-  login: async (privateKeyInput?: string) => {
-    set({ isLoading: true, error: null });
-    console.log('[NDK] Login attempt starting');
-    
+  login: async (privateKey?: string) => {
     try {
+      console.log('[NDK] Login attempt starting');
+      set({ isLoading: true, error: null });
+      
       const { ndk } = get();
       if (!ndk) {
-        console.log('[NDK] Error: NDK not initialized');
         throw new Error('NDK not initialized');
       }
       
-      console.log('[NDK] Processing private key input');
-      
-      // If no private key is provided, generate one
-      let privateKeyHex = privateKeyInput;
-      if (!privateKeyHex) {
-        console.log('[NDK] No key provided, generating new key');
-        const { privateKey } = get().generateKeys();
-        privateKeyHex = privateKey;
-      } else {
-        // Clean the input
-        privateKeyHex = privateKeyHex.trim().replace(/\s/g, '');
-        
-        // Special case for nsec1324q936nn4pp8yd34jg4ufxle7tnpv8z457gha0rwueqluz78cjq20ufjj
-        // This is the known test key that works on iOS but has issues on Android
-        if (privateKeyHex === "nsec1324q936nn4pp8yd34jg4ufxle7tnpv8z457gha0rwueqluz78cjq20ufjj") {
-          console.log('[NDK] Found test nsec, using hardcoded conversion');
-          try {
-            // Force decoding with a fresh string (avoiding Android string manipulation issues)
-            const decoded = nip19.decode("nsec1324q936nn4pp8yd34jg4ufxle7tnpv8z457gha0rwueqluz78cjq20ufjj");
-            if (decoded.type === 'nsec') {
-              privateKeyHex = bytesToHex(decoded.data as any);
-              console.log('[NDK] Hardcoded nsec conversion successful, new length:', privateKeyHex.length);
-            }
-          } catch (error) {
-            console.error('[NDK] Even hardcoded nsec failed to decode:', error);
-            throw new Error('Critical error: Could not decode known nsec key');
-          }
-        } else if (privateKeyHex.indexOf('nsec') === 0) {
-          // Generic nsec handling for other keys
-          try {
-            console.log('[NDK] Detected nsec format, attempting to decode');
-            const decoded = nip19.decode(privateKeyHex);
-            if (decoded.type === 'nsec') {
-              privateKeyHex = bytesToHex(decoded.data as any);
-              console.log('[NDK] Converted nsec to hex, new length:', privateKeyHex.length);
-            }
-          } catch (error) {
-            console.error('[NDK] Failed to decode nsec:', error);
-            throw new Error('Invalid nsec key format');
-          }
-        } else if (privateKeyHex.length !== 64 || !/^[0-9a-f]+$/i.test(privateKeyHex)) {
-          // Not nsec and not valid hex - show error
-          console.error('[NDK] Key is not nsec and not valid hex');
-          throw new Error('Invalid private key format - must be nsec or 64-character hex');
-        }
+      // Generate new keys if none provided
+      if (!privateKey) {
+        console.log('[NDK] No private key provided, generating new keys');
+        const { privateKey: newPrivateKey } = get().generateKeys();
+        privateKey = newPrivateKey;
       }
       
-      console.log('[NDK] Creating signer with validated key, length:', privateKeyHex.length);
-      
-      // Create signer with private key
-      const signer = new NDKPrivateKeySigner(privateKeyHex);
-      console.log('[NDK] Signer created, setting on NDK');
-      ndk.signer = signer;
-      
-      // Get user
-      console.log('[NDK] Getting user from signer');
-      const user = await ndk.signer.user();
-      if (!user) {
-        console.log('[NDK] Error: Could not get user from signer');
-        throw new Error('Could not get user from signer');
-      }
-      
-      console.log('[NDK] User retrieved, pubkey:', user.pubkey ? user.pubkey.substring(0, 8) + '...' : 'undefined');
-      
-      // Fetch user profile
-      console.log('[NDK] Fetching user profile');
+      // Create signer from private key
       try {
-        await user.fetchProfile();
-        console.log('[NDK] Profile fetched successfully');
-      } catch (profileError) {
-        console.warn('[NDK] Warning: Could not fetch user profile:', profileError);
-        // Continue even if profile fetch fails
-      }
-      
-      // Process profile data to ensure image property is set
-      if (user.profile) {
-        console.log('[NDK] Profile data available');
-        if (!user.profile.image && (user.profile as any).picture) {
-          user.profile.image = (user.profile as any).picture;
-          console.log('[NDK] Set image from picture property');
+        const privateKeyBytes = hexToBytes(privateKey!);
+        const signer = new NDKPrivateKeySigner(privateKeyBytes);
+        ndk.signer = signer;
+        
+        // Get user from signer
+        const user = await ndk.signer.user();
+        if (!user) {
+          throw new Error('Failed to get user from signer');
         }
         
-        console.log('[NDK] User profile loaded:', 
-          user.profile.name || user.profile.displayName || 'No name available');
-      } else {
-        console.log('[NDK] No profile data available');
-      }
-      
-      // Save the private key hex string securely
-      console.log('[NDK] Saving private key to secure storage');
-      await SecureStore.setItemAsync(PRIVATE_KEY_STORAGE_KEY, privateKeyHex);
-      
-      // After successful login, import user relay preferences
-      try {
-        console.log('[NDK] Creating RelayService to import user preferences');
-        const relayService = new RelayService();
+        // Set current user and authenticated state
+        set({ 
+          currentUser: user,
+          isAuthenticated: true,
+          isLoading: false 
+        });
         
-        // Set NDK on the relay service
-        console.log('[NDK] Setting NDK on RelayService');
-        relayService.setNDK(ndk as any); // Using type assertion
+        // Store credentials securely
+        await SecureStore.setItemAsync(PRIVATE_KEY_STORAGE_KEY, privateKey!);
         
-        // Import user relay preferences from metadata (kind:3 events)
-        if (user.pubkey) {
-          console.log('[NDK] Importing relay metadata for user:', user.pubkey.substring(0, 8) + '...');
-          try {
-            await relayService.importFromUserMetadata(user.pubkey, ndk);
-            console.log('[NDK] Successfully imported user relay preferences');
-          } catch (importError) {
-            console.warn('[NDK] Could not import user relay preferences:', importError);
-            // Continue even if import fails
-          }
-        } else {
-          console.log('[NDK] Cannot import relay metadata: No pubkey available');
-        }
-      } catch (relayError) {
-        console.error('[NDK] Error with RelayService:', relayError);
-        // Continue with login even if relay import fails
+        console.log('[NDK] Login successful with pubkey:', user.pubkey);
+        return true;
+      } catch (error) {
+        console.error('[NDK] Login error:', error);
+        set({ 
+          error: error instanceof Error ? error : new Error('Failed to login'), 
+          isLoading: false 
+        });
+        return false;
       }
-      
-      console.log('[NDK] Login successful, updating state');
-      set({ 
-        currentUser: user,
-        isAuthenticated: true,
-        isLoading: false
-      });
-      
-      console.log('[NDK] Login complete');
-      return true;
     } catch (error) {
-      console.error('[NDK] Login error detailed:', error);
-      set({
-        error: error instanceof Error ? error : new Error('Failed to login'),
-        isLoading: false
+      console.error('[NDK] Login error:', error);
+      set({ 
+        error: error instanceof Error ? error : new Error('Failed to login'), 
+        isLoading: false 
       });
       return false;
     }
@@ -414,9 +269,18 @@ export const useNDKStore = create<NDKStoreState & NDKStoreActions>((set, get) =>
   
   logout: async () => {
     try {
-      // Remove credentials from secure storage
-      await SecureStore.deleteItemAsync(PRIVATE_KEY_STORAGE_KEY);
-      await SecureStore.deleteItemAsync('nostr_external_signer');
+      console.log('[NDK] Logging out...');
+      
+      // Clear stored credentials
+      try {
+        // Use the more flexible credential helper
+        const privateKey = await getCredentialWithFallback(PRIVATE_KEY_STORAGE_KEY, []);
+        if (privateKey) {
+          await SecureStore.deleteItemAsync(PRIVATE_KEY_STORAGE_KEY);
+        }
+      } catch (storageError) {
+        console.warn('[NDK] Error removing credentials from storage:', storageError);
+      }
       
       // Reset NDK state
       const { ndk } = get();
@@ -433,6 +297,35 @@ export const useNDKStore = create<NDKStoreState & NDKStoreActions>((set, get) =>
       console.log('[NDK] User logged out successfully');
     } catch (error) {
       console.error('[NDK] Logout error:', error);
+    }
+  },
+
+  loginWithExternalSigner: async (pubkey: string, packageName: string) => {
+    set({ isLoading: true, error: null });
+    console.log('[NDK] External signer login attempt starting');
+    
+    try {
+      const { ndk } = get();
+      if (!ndk) {
+        console.log('[NDK] Error: NDK not initialized');
+        throw new Error('NDK not initialized');
+      }
+      
+      // Check if we're on web platform
+      if (PlatformConstants.isWeb) {
+        throw new Error('External signers are not supported on web');
+      }
+      
+      // This part would depend on how you implement external signers
+      // For now, we'll just create a placeholder
+      throw new Error('External signers not implemented yet');
+    } catch (error) {
+      console.error('[NDK] External signer login error:', error);
+      set({ 
+        error: error instanceof Error ? error : new Error('Failed to login with external signer'), 
+        isLoading: false 
+      });
+      return false;
     }
   },
   

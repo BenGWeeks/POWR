@@ -2,8 +2,10 @@
 import React from 'react';
 import { View, ActivityIndicator, ScrollView, Text } from 'react-native';
 import { Platform } from 'react-native';
-// Import from expo-sqlite-next which works on both web and native
-import { openDatabaseSync, type Database } from 'expo-sqlite-next';
+// Import SQLite type and our new cross-platform database adapter
+import { type SQLiteDatabase } from 'expo-sqlite';
+import { createDatabaseAdapter } from '@/lib/platform/databaseAdapter';
+import { PlatformConstants, safelyRun } from '@/lib/platform';
 import { schema } from '@/lib/db/schema';
 import { ExerciseService } from '@/lib/db/services/ExerciseService';
 import { PublicationQueueService } from '@/lib/db/services/PublicationQueueService';
@@ -28,7 +30,7 @@ interface DatabaseServicesContextValue {
   publicationQueue: PublicationQueueService | null;
   favoritesService: FavoritesService | null;
   powrPackService: POWRPackService | null;
-  db: Database | null;
+  db: SQLiteDatabase | null;
 }
 
 const DatabaseServicesContext = React.createContext<DatabaseServicesContextValue>({
@@ -110,160 +112,151 @@ export function DatabaseProvider({ children }: DatabaseProviderProps) {
   React.useEffect(() => {
     if (isReady && services.db) {
       console.log('[DB] Database ready - triggering initial library refresh');
-      // Set database for exercise title lookups
-      try {
-        const { setDatabaseConnection } = require('@/types/nostr-workout');
-        setDatabaseConnection(services.db);
-        console.log('[DB] Database connection set for exercise title lookups');
-      } catch (error) {
-        console.error('[DB] Failed to set database for exercise title lookups:', error);
-      }
-      // Refresh all library data
-      useLibraryStore.getState().refreshAll();
     }
   }, [isReady, services.db]);
 
+  // Effect to initialize database
   React.useEffect(() => {
     async function initDatabase() {
       try {
         console.log('[DB] Starting database initialization...');
         
-        // Add a small delay to ensure system is ready (especially on Android)
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        console.log('[DB] Opening database...');
-        const db = openDatabaseSync('powr.db');
-        
-        console.log('[DB] Creating schema...');
-        await schema.createTables(db);
-        
-        // Explicitly check for critical tables after schema creation
-        await schema.ensureCriticalTablesExist(db);
-        
-        // Run migrations with robust error handling
-        const runMigration = async (version: string, migrationFn: (db: Database) => Promise<void>) => {
-          try {
-            await migrationFn(db);
-            console.log(`[DB] Migration ${version} executed successfully`);
-          } catch (migrationError) {
-            console.warn(`[DB] Error running migration ${version}:`, migrationError);
-            // Log more details about the error
-            if (migrationError instanceof Error) {
-              console.warn(`[DB] Migration error details: ${migrationError.message}`);
-              if (migrationError.stack) {
-                console.warn(`[DB] Stack trace: ${migrationError.stack}`);
-              }
-            }
-            // Continue even if migration fails - tables might already be updated
+        try {
+          // Add a small delay to ensure system is ready (especially on Android)
+          await new Promise(resolve => setTimeout(resolve, 200));
+          
+          console.log('[DB] Opening database using new cross-platform adapter...');
+          const dbAdapter = createDatabaseAdapter('powr.db');
+          // Get the native SQLite database object which is compatible with our schema functions
+          const db = dbAdapter.getNativeDatabase();
+          
+          if (!db) {
+            throw new Error('Failed to create database adapter');
           }
-        };
-        
-        // Run migrations
-        await runMigration('v8', (schema as any).migrate_v8);
-        await runMigration('v9', (schema as any).migrate_v9);
-        await runMigration('v10', (schema as any).migrate_v10);
-
-        // Initialize services with error handling
-        console.log('[DB] Initializing services...');
-        let exerciseService: ExerciseService;
-        let workoutService: WorkoutService;
-        let templateService: TemplateService;
-        let publicationQueue: PublicationQueueService;
-        let favoritesService: FavoritesService;
-        let powrPackService: POWRPackService;
-        
-        try {
-          exerciseService = new ExerciseService(db);
-          console.log('[DB] ExerciseService initialized');
+          
+          console.log(`[DB] Running on platform: ${Platform.OS}`);
+          
+          // The adapter will handle web fallbacks automatically
+          console.log('[DB] Creating schema...');
+          
+          // Run migrations with robust error handling
+          const runMigration = async (version: string, migrationFn: (db: SQLiteDatabase) => Promise<void>) => {
+            try {
+              await migrationFn(db);
+              console.log(`[DB] Migration ${version} executed successfully`);
+            } catch (migrationError) {
+              console.warn(`[DB] Error running migration ${version}:`, migrationError);
+              // Log more details about the error
+              if (migrationError instanceof Error) {
+                console.warn(`[DB] Migration error details: ${migrationError.message}`);
+                if (migrationError.stack) {
+                  console.warn(`[DB] Stack trace: ${migrationError.stack}`);
+                }
+              }
+              // Continue even if migration fails - tables might already be updated
+            }
+          };
+          
+          // Safely run schema creation with error handling
+          await safelyRun(
+            async () => {
+              if (db) {
+                // Create schema tables
+                await schema.createTables(db);
+                await schema.ensureCriticalTablesExist(db);
+                
+                // Run migrations
+                await runMigration('v8', (schema as any).migrate_v8);
+                await runMigration('v9', (schema as any).migrate_v9);
+                await runMigration('v10', (schema as any).migrate_v10);
+              }
+            },
+            undefined,
+            'Schema setup'
+          );
+          
+          // Initialize services
+          console.log('[DB] Initializing database services...');
+          
+          // Create services with the database
+          // We use a database adapter that can use db, or fallback to memory on web
+          const exerciseService = new ExerciseService(db);
+          const workoutService = new WorkoutService(db);
+          // TemplateService requires both db and exerciseService
+          const templateService = new TemplateService(db, exerciseService);
+          const publicationQueue = new PublicationQueueService(db);
+          const favoritesService = new FavoritesService(db);
+          const powrPackService = new POWRPackService(db);
+          
+          // Initialize table creation (if needed) and other startup operations
+          // Some services may have additional initialization needs
+          try {            
+            // Connect the publication queue to NDK if available
+            if (ndk && typeof publicationQueue.setNDK === 'function') {
+              publicationQueue.setNDK(ndk);
+            }
+          } catch (initError) {
+            console.warn('[DB] Non-critical initialization error:', initError);
+            // Continue even if some initialization fails - especially on web
+          }
+          
+          // Set services in the context
+          setServices({
+            exerciseService,
+            workoutService,
+            templateService,
+            publicationQueue,
+            favoritesService,
+            powrPackService,
+            db,
+          });
+          
+          // Make database available to other modules that need it
+          setDatabaseConnection(db);
+          
+          // Log database info in dev mode
+          if (__DEV__) {
+            await logDatabaseInfo();
+          }
+          
+          console.log('[DB] Database initialized successfully');
+          setIsReady(true);
         } catch (error) {
-          console.error('[DB] Failed to initialize ExerciseService:', error);
-          throw new Error('Failed to initialize ExerciseService');
+          console.error('[DB] Database initialization failed:', error);
+          
+          if (PlatformConstants.isWeb) {
+            // On web, we'll try to continue even with errors
+            console.warn('[DB] Continuing with limited functionality on web platform');
+            // Note: We'll set an error message but still try to render the app
+            setError('Database initialization had issues. Some features may not work properly on web.');
+            // We'll continue with initialization but with limited functionality
+          } else {
+            // On native, we'll stop if there's an error
+            setError(String(error));
+            setIsReady(false);
+            return;
+          }
         }
+      } catch (error) {
+        console.error('[DB] Database initialization failed:', error);
         
-        try {
-          workoutService = new WorkoutService(db);
-          console.log('[DB] WorkoutService initialized');
-        } catch (error) {
-          console.error('[DB] Failed to initialize WorkoutService:', error);
-          throw new Error('Failed to initialize WorkoutService');
+        if (PlatformConstants.isWeb) {
+          // On web, we'll try to continue even with errors
+          console.warn('[DB] Continuing with limited functionality on web platform');
+          // Note: We'll set an error message but still try to render the app
+          setError('Database initialization had issues. Some features may not work properly on web.');
+          // We'll continue with initialization but with limited functionality
+        } else {
+          // On native, we'll stop if there's an error
+          setError(String(error));
+          setIsReady(false);
+          return;
         }
-        
-        try {
-          templateService = new TemplateService(db, exerciseService);
-          console.log('[DB] TemplateService initialized');
-        } catch (error) {
-          console.error('[DB] Failed to initialize TemplateService:', error);
-          throw new Error('Failed to initialize TemplateService');
-        }
-        
-        try {
-          publicationQueue = new PublicationQueueService(db);
-          console.log('[DB] PublicationQueueService initialized');
-        } catch (error) {
-          console.error('[DB] Failed to initialize PublicationQueueService:', error);
-          throw new Error('Failed to initialize PublicationQueueService');
-        }
-        
-        try {
-          favoritesService = new FavoritesService(db);
-          console.log('[DB] FavoritesService initialized');
-        } catch (error) {
-          console.error('[DB] Failed to initialize FavoritesService:', error);
-          throw new Error('Failed to initialize FavoritesService');
-        }
-        
-        try {
-          powrPackService = new POWRPackService(db);
-          console.log('[DB] POWRPackService initialized');
-        } catch (error) {
-          console.error('[DB] Failed to initialize POWRPackService:', error);
-          throw new Error('Failed to initialize POWRPackService');
-        }
-        
-        // Initialize the favorites service
-        try {
-          await favoritesService.initialize();
-          console.log('[DB] FavoritesService fully initialized');
-        } catch (error) {
-          console.error('[DB] Error initializing FavoritesService:', error);
-          // Continue even if favorites initialization fails
-        }
-        
-        // Initialize NDK on services if available
-        if (ndk) {
-          publicationQueue.setNDK(ndk);
-        }
-
-        // Set services
-        setServices({
-          exerciseService,
-          workoutService,
-          templateService,
-          publicationQueue,
-          favoritesService,
-          powrPackService,
-          db,
-        });
-        
-        // Set database connection for exercise title lookups
-        setDatabaseConnection(db);
-        console.log('[DB] Database connection set for exercise title lookups');
-        
-        // Display database info in development mode
-        if (__DEV__) {
-          await logDatabaseInfo();
-        }
-        
-        console.log('[DB] Database initialized successfully');
-        setIsReady(true);
-      } catch (e) {
-        console.error('[DB] Database initialization failed:', e);
-        setError(e instanceof Error ? e.message : 'Database initialization failed');
       }
     }
 
     initDatabase();
-  }, []);
+  }, [ndk]);
 
   if (error) {
     return (
