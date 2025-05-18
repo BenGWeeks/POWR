@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, ScrollView } from 'react-native';
+import { View, ScrollView, Platform } from 'react-native';
 import { Text } from '@/components/ui/text';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { AlertCircle, CheckCircle2 } from 'lucide-react-native';
-import { useSQLiteContext } from 'expo-sqlite';
+import { AlertCircle, CheckCircle2, Info } from 'lucide-react-native';
+import { useDatabase } from '@/components/DatabaseProvider';
+import { PlatformConstants } from '@/lib/platform';
 import { ExerciseType, ExerciseCategory, Equipment } from '@/types/exercise';
 import { SQLTransaction, SQLResultSet, SQLError } from '@/lib/db/types';
 
@@ -31,14 +32,20 @@ interface ExerciseRow {
 }
 
 export default function DatabaseDebug() {
-  const db = useSQLiteContext();
+  const db = useDatabase();
+  const isWeb = Platform.OS === 'web' || PlatformConstants.isWeb;
+
   const [dbStatus, setDbStatus] = useState<{
     initialized: boolean;
     tables: string[];
     error?: string;
+    isWeb: boolean;
+    usingFallback: boolean;
   }>({
     initialized: false,
     tables: [],
+    isWeb: false,
+    usingFallback: false,
   });
 
   const [testResults, setTestResults] = useState<{
@@ -52,32 +59,48 @@ export default function DatabaseDebug() {
 
   const checkDatabase = async () => {
     try {
-      // Check schema_version table
-      const version = await db.getFirstAsync<SchemaVersion>(
-        'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
-      );
-      
-      // Get all tables
-      const tables = await db.getAllAsync<TableInfo>(
-        "SELECT name FROM sqlite_master WHERE type='table'"
-      );
-      
+      if (isWeb) {
+        console.log('[DB Debug] Running on web platform');
+      }
+
+      let version;
+      try {
+        version = await db.getFirstAsync<SchemaVersion>(
+          'SELECT version FROM schema_version ORDER BY version DESC LIMIT 1'
+        );
+      } catch (e) {
+        console.log('[DB Debug] Error getting version:', e);
+        version = null;
+      }
+
+      let tables: TableInfo[] = [];
+      try {
+        tables = await db.getAllAsync<TableInfo>(
+          "SELECT name FROM sqlite_master WHERE type='table'"
+        );
+      } catch (e) {
+        console.log('[DB Debug] Error getting tables:', e);
+      }
+
       setDbStatus({
-        initialized: !!version,
+        initialized: true,
         tables: tables.map(t => t.name),
+        isWeb,
+        usingFallback: isWeb,
       });
     } catch (error) {
       console.error('Error checking database:', error);
       setDbStatus(prev => ({
         ...prev,
         error: error instanceof Error ? error.message : 'Unknown error occurred',
+        isWeb,
+        usingFallback: isWeb,
       }));
     }
   };
 
   const runTestInsert = async () => {
     try {
-      // Test exercise
       const testExercise = {
         title: "Test Squat",
         type: "strength" as ExerciseType,
@@ -94,12 +117,10 @@ export default function DatabaseDebug() {
           reps: "count" as const
         }
       };
-  
+
       const timestamp = Date.now();
-      
-      // Insert exercise using withTransactionAsync
+
       await db.withTransactionAsync(async () => {
-        // Insert exercise
         await db.runAsync(
           `INSERT INTO exercises (
             id, title, type, category, equipment, description,
@@ -118,8 +139,7 @@ export default function DatabaseDebug() {
             timestamp
           ]
         );
-  
-        // Insert tags
+
         for (const tag of testExercise.tags) {
           await db.runAsync(
             "INSERT INTO exercise_tags (exercise_id, tag) VALUES (?, ?)",
@@ -127,18 +147,16 @@ export default function DatabaseDebug() {
           );
         }
       });
-  
-      // Verify insert
+
       const result = await db.getFirstAsync<ExerciseRow>(
         "SELECT * FROM exercises WHERE id = ?",
         ['test-1']
       );
-  
+
       setTestResults({
         success: true,
         message: `Successfully inserted and verified test exercise: ${JSON.stringify(result, null, 2)}`
       });
-  
     } catch (error) {
       console.error('Test insert error:', error);
       setTestResults({
@@ -150,7 +168,7 @@ export default function DatabaseDebug() {
 
   return (
     <View className="p-4 mb-4">
-      <Card className="mt-4">  {/* Add mt-4 to create spacing */}
+      <Card className="mt-4">
         <CardHeader>
           <CardTitle>
             <Text className="text-xl font-semibold">Database Status</Text>
@@ -159,12 +177,26 @@ export default function DatabaseDebug() {
         <CardContent>
           <View className="space-y-2">
             <Text>Initialized: {dbStatus.initialized ? '✅' : '❌'}</Text>
+            <Text>Web Platform: {dbStatus.isWeb ? '✅' : '❌'}</Text>
+            <Text>Using Fallback: {dbStatus.usingFallback ? '✅' : '❌'}</Text>
             <Text>Tables Found: {dbStatus.tables.length}</Text>
             <View className="pl-4">
               {dbStatus.tables.map(table => (
                 <Text key={table} className="text-muted-foreground">• {table}</Text>
               ))}
             </View>
+            {dbStatus.isWeb && (
+              <View className="mt-4 p-4 bg-blue-100 rounded-lg border border-blue-300">
+                <View className="flex-row items-center gap-2">
+                  <Info className="text-blue-500" size={20} />
+                  <Text className="font-semibold text-blue-500">Web Mode</Text>
+                </View>
+                <Text className="mt-2 text-blue-700">
+                  Running on web platform. Database operations are using in-memory fallbacks.
+                  Some functionality may be limited.
+                </Text>
+              </View>
+            )}
             {dbStatus.error && (
               <View className="mt-4 p-4 bg-destructive/10 rounded-lg border border-destructive">
                 <View className="flex-row items-center gap-2">

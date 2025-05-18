@@ -794,47 +794,31 @@ const useWorkoutStoreBase = create<ExtendedWorkoutState & ExtendedWorkoutActions
         return;
       }
       
-      // For native platforms, use our adapter with non-blocking initialization
-      const dbAdapter = createDatabaseAdapter('powr.db');
-      
-      // Wait until the adapter is ready (with a timeout to prevent blocking)
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Database initialization timeout')), 3000);
-      });
-      
-      // Poll for db readiness with a timeout
-      const waitForAdapter = async () => {
-        // Try for 3 seconds
-        let attempts = 0;
-        while (!dbAdapter.isInitialized() && attempts < 30) {
-          await new Promise(r => setTimeout(r, 100));
-          attempts++;
-        }
-        return dbAdapter.isInitialized();
-      };
-      
-      let isReady = false;
+      // For native platforms, use our adapter which now handles initialization internally
+      let db;
       try {
-        // Race the wait with a timeout
-        const result = await Promise.race([waitForAdapter(), timeoutPromise]);
-        isReady = result === true;
-      } catch (timeoutError) {
-        console.warn('[Favorites] Database initialization timed out, using empty favorites');
+        // Wrap database initialization in a timeout
+        const dbAdapterPromise = createDatabaseAdapter('powr.db');
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error('Database initialization timeout')), 3000);
+        });
+        
+        // Race the database initialization with a timeout
+        const dbAdapter = await Promise.race([
+          dbAdapterPromise,
+          timeoutPromise
+        ]) as any; // Use 'any' temporarily to avoid type errors
+        
+        // Get the native database connection - also async now
+        db = await dbAdapter.getNativeDatabase();
+        if (!db) {
+          console.warn('[Favorites] Database connection not available, using empty favorites');
+          set({ favoriteIds: [], favoritesLoaded: true });
+          return;
+        }
+      } catch (error) {
+        console.warn('[Favorites] Database initialization failed:', error);
         // Continue with empty favorites array
-        set({ favoriteIds: [], favoritesLoaded: true });
-        return;
-      }
-      
-      if (!isReady) {
-        console.warn('[Favorites] Database not ready, using empty favorites');
-        set({ favoriteIds: [], favoritesLoaded: true });
-        return;
-      }
-      
-      // Get the native database connection
-      const db = dbAdapter.getNativeDatabase();
-      if (!db) {
-        console.warn('[Favorites] Database connection not available, using empty favorites');
         set({ favoriteIds: [], favoritesLoaded: true });
         return;
       }
@@ -896,25 +880,19 @@ const useWorkoutStoreBase = create<ExtendedWorkoutState & ExtendedWorkoutActions
     }
     
     try {
-      // Use the database adapter
-      const dbAdapter = createDatabaseAdapter('powr.db');
+      // Use the database adapter - now async
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Database initialization timeout')), 3000);
+      });
       
-      // Wait for db adapter to be ready
-      const waitForAdapter = async () => {
-        let attempts = 0;
-        while (!dbAdapter.isInitialized() && attempts < 50) {
-          await new Promise(r => setTimeout(r, 100));
-          attempts++;
-        }
-        return dbAdapter.isInitialized();
-      };
+      // Create adapter with timeout to prevent hanging
+      const dbAdapter = await Promise.race([
+        createDatabaseAdapter('powr.db'),
+        timeoutPromise
+      ]) as any; // Use any type to avoid TypeScript errors
       
-      const isReady = await waitForAdapter();
-      if (!isReady) {
-        throw new Error('Database adapter initialization timeout');
-      }
-      
-      const db = dbAdapter.getNativeDatabase();
+      // Get the database - also awaitable now
+      const db = await dbAdapter.getNativeDatabase();
       if (!db) {
         throw new Error('Unable to get database instance');
       }
@@ -930,25 +908,19 @@ const useWorkoutStoreBase = create<ExtendedWorkoutState & ExtendedWorkoutActions
   
   addFavorite: async (template: WorkoutTemplate) => {
     try {
-      // Use the database adapter
-      const dbAdapter = createDatabaseAdapter('powr.db');
+      // Use the database adapter - now async
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Database initialization timeout')), 3000);
+      });
       
-      // Wait for db adapter to be ready
-      const waitForAdapter = async () => {
-        let attempts = 0;
-        while (!dbAdapter.isInitialized() && attempts < 50) {
-          await new Promise(r => setTimeout(r, 100));
-          attempts++;
-        }
-        return dbAdapter.isInitialized();
-      };
+      // Create adapter with timeout to prevent hanging
+      const dbAdapter = await Promise.race([
+        createDatabaseAdapter('powr.db'),
+        timeoutPromise
+      ]) as any; // Use any type to avoid TypeScript errors
       
-      const isReady = await waitForAdapter();
-      if (!isReady) {
-        throw new Error('Database adapter initialization timeout');
-      }
-      
-      const db = dbAdapter.getNativeDatabase();
+      // Get the database - also awaitable now
+      const db = await dbAdapter.getNativeDatabase();
       if (!db) {
         throw new Error('Unable to get database instance');
       }
@@ -976,25 +948,19 @@ const useWorkoutStoreBase = create<ExtendedWorkoutState & ExtendedWorkoutActions
   
   removeFavorite: async (templateId: string) => {
     try {
-      // Use the database adapter
-      const dbAdapter = createDatabaseAdapter('powr.db');
+      // Use the database adapter - now async
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Database initialization timeout')), 3000);
+      });
       
-      // Wait for db adapter to be ready
-      const waitForAdapter = async () => {
-        let attempts = 0;
-        while (!dbAdapter.isInitialized() && attempts < 50) {
-          await new Promise(r => setTimeout(r, 100));
-          attempts++;
-        }
-        return dbAdapter.isInitialized();
-      };
+      // Create adapter with timeout to prevent hanging
+      const dbAdapter = await Promise.race([
+        createDatabaseAdapter('powr.db'),
+        timeoutPromise
+      ]) as any; // Use any type to avoid TypeScript errors
       
-      const isReady = await waitForAdapter();
-      if (!isReady) {
-        throw new Error('Database adapter initialization timeout');
-      }
-      
-      const db = dbAdapter.getNativeDatabase();
+      // Get the database - also awaitable now
+      const db = await dbAdapter.getNativeDatabase();
       if (!db) {
         throw new Error('Unable to get database instance');
       }

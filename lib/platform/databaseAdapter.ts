@@ -24,32 +24,64 @@ export class DatabaseAdapter {
   private isReady: boolean = false;
   private webFallback: boolean = false;
   private webStorage: Map<string, any> = new Map();
+  private initPromise: Promise<void> | null = null;
   
   constructor(databaseName: string) {
     this.dbName = databaseName;
-    // Use setTimeout to avoid blocking the main thread with synchronous DB operations
-    setTimeout(() => this.initialize(), 0);
+    // Start initialization immediately but as a Promise
+    this.initPromise = this.initialize();
   }
   
   /**
    * Initializes the database connection
    * @private
+   * @returns Promise that resolves when initialization is complete
    */
-  private initialize(): void {
+  private async initialize(): Promise<void> {
     try {
-      if (PlatformConstants.isWeb) {
-        // For web platform, always use the web fallback
+      // Check platform - we need to handle web specifically
+      if (PlatformConstants.isWeb || Platform.OS === 'web') {
+        // For web platform, ALWAYS use the web fallback
         logger.info('[DB] Web platform detected, using in-memory storage');
         this.webFallback = true;
         this.initializeWebStorage();
         this.isReady = true;
+        logger.info('[DB] Web storage initialized successfully');
         return;
       }
       
       // On native platforms, we rely on SQLite working properly
       try {
-        this.db = openDatabaseSync(this.dbName);
-        this.isReady = true;
+        // Log platform details to help with debugging
+        logger.info(`[DB] Opening database '${this.dbName}' on platform: ${getPlatform()}`);
+        
+        try {
+          // Try opening with a retry mechanism
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            try {
+              logger.info(`[DB] Attempt ${attempt} to open database...`);
+              this.db = openDatabaseSync(this.dbName);
+              
+              // If we got here, the database opened successfully
+              this.isReady = true;
+              logger.info(`[DB] Database '${this.dbName}' opened successfully on attempt ${attempt}`);
+              break;
+            } catch (retryError) {
+              logger.warn(`[DB] Failed on attempt ${attempt}:`, retryError);
+              if (attempt === 3) throw retryError; // Re-throw on last attempt
+              await new Promise(resolve => setTimeout(resolve, 300)); // Short delay before retry
+            }
+          }
+        } catch (openError: unknown) {
+          const errorMessage = openError instanceof Error ? openError.message : 'Unknown error';
+          throw new Error(`SQLite open error: ${errorMessage}`);
+        }
+        
+        // Verify database is valid
+        if (!this.db) {
+          throw new Error('SQLite returned null database reference');
+        }
+        
         logger.debug(`Database '${this.dbName}' opened successfully on platform: ${getPlatform()}`);
       } catch (nativeDbError) {
         // Even on native, be more resilient to initialization failures
@@ -440,8 +472,30 @@ export class DatabaseAdapter {
   /**
    * Get the native SQLiteDatabase instance
    * Warning: Only use this if you need direct access to the native instance
+   * @returns Promise that resolves to the database or null if initialization failed
    */
-  getNativeDatabase(): SQLiteDatabase | null {
+  async getNativeDatabase(): Promise<SQLiteDatabase | null> {
+    logger.info(`[DB] Getting native database, current ready state: ${this.isReady}`);
+    
+    // Wait for initialization to complete before returning the database
+    if (this.initPromise) {
+      try {
+        logger.info('[DB] Waiting for database initialization to complete...');
+        await this.initPromise;
+        logger.info(`[DB] Initialization complete, ready state: ${this.isReady}`);
+      } catch (error) {
+        logger.error('[DB] Database initialization failed:', error);
+        // If initialization failed, try to recover with web fallback
+        if (!this.isReady && !this.webFallback) {
+          logger.warn('[DB] Attempting recovery with web fallback...');
+          this.webFallback = true;
+          this.initializeWebStorage();
+          this.isReady = true;
+        }
+      }
+    }
+    
+    logger.info(`[DB] Returning database instance: ${this.db ? 'Available' : 'Null'}`);
     return this.db;
   }
   
@@ -463,7 +517,11 @@ export class DatabaseAdapter {
 
 /**
  * Create a database adapter for the specified database
+ * @returns A promise that resolves to the initialized database adapter
  */
-export function createDatabaseAdapter(dbName: string): DatabaseAdapter {
-  return new DatabaseAdapter(dbName);
+export async function createDatabaseAdapter(dbName: string): Promise<DatabaseAdapter> {
+  const adapter = new DatabaseAdapter(dbName);
+  // Wait for initialization to complete before returning
+  await adapter.getNativeDatabase();
+  return adapter;
 }

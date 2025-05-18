@@ -126,13 +126,48 @@ export function DatabaseProvider({ children }: DatabaseProviderProps) {
           await new Promise(resolve => setTimeout(resolve, 200));
           
           console.log('[DB] Opening database using new cross-platform adapter...');
-          const dbAdapter = createDatabaseAdapter('powr.db');
+          
+          // First determine if we're on web platform
+          const isWeb = Platform.OS === 'web' || PlatformConstants.isWeb;
+          console.log(`[DB] Platform detection: ${Platform.OS}, isWeb=${isWeb}`);
+          
+          if (isWeb) {
+            console.log('[DB] Web platform detected - using web fallback mode');
+          }
+          
+          // Create adapter with timeout handling to prevent hanging
+          const dbAdapterPromise = createDatabaseAdapter('powr.db');
+          const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('Database initialization timeout after 5 seconds')), 5000);
+          });
+          
+          // Race the database initialization with a timeout
+          console.log('[DB] Waiting for database adapter to initialize...');
+          const dbAdapter = await Promise.race([
+            dbAdapterPromise,
+            timeoutPromise
+          ]) as any;
+          
+          console.log('[DB] Adapter initialized, getting native database...');
+          
           // Get the native SQLite database object which is compatible with our schema functions
-          const db = dbAdapter.getNativeDatabase();
+          const db = await dbAdapter.getNativeDatabase();
           
           if (!db) {
-            throw new Error('Failed to create database adapter');
+            if (isWeb) {
+              // On web platforms, this is expected behavior - log as info, not error
+              console.log('[DB] Web platform: Database adapter returned null (expected behavior)');
+              console.log('[DB] Using in-memory fallbacks for database operations');
+              // Continue with in-memory fallbacks on web platforms
+              // Services will be created with null db but use their internal web fallbacks
+            } else {
+              // On native platforms, this is an actual error
+              console.error('[DB] Native platform: Database adapter returned null - this is unexpected');
+              throw new Error('Failed to create database adapter - adapter returned null database');
+            }
           }
+          
+          console.log('[DB] Successfully obtained database instance');
           
           console.log(`[DB] Running on platform: ${Platform.OS}`);
           
@@ -178,15 +213,22 @@ export function DatabaseProvider({ children }: DatabaseProviderProps) {
           // Initialize services
           console.log('[DB] Initializing database services...');
           
-          // Create services with the database
-          // We use a database adapter that can use db, or fallback to memory on web
+          // Use our previous web platform detection
+          
+          // Create services with the database (or null db on web with fallbacks)
+          // On web, if db is null, the services should use their internal fallbacks
           const exerciseService = new ExerciseService(db);
           const workoutService = new WorkoutService(db);
+          
           // TemplateService requires both db and exerciseService
           const templateService = new TemplateService(db, exerciseService);
           const publicationQueue = new PublicationQueueService(db);
           const favoritesService = new FavoritesService(db);
           const powrPackService = new POWRPackService(db);
+          
+          if (isWeb && !db) {
+            console.log('[DB] Web environment detected with null database - services will use in-memory fallbacks');
+          }
           
           // Initialize table creation (if needed) and other startup operations
           // Some services may have additional initialization needs
@@ -288,7 +330,19 @@ export function DatabaseProvider({ children }: DatabaseProviderProps) {
 // Hooks for accessing services
 export function useExerciseService() {
   const context = React.useContext(DatabaseServicesContext);
+  const isWeb = Platform.OS === 'web' || PlatformConstants.isWeb;
+  
   if (!context.exerciseService) {
+    if (isWeb) {
+      console.log('[DB] Web platform detected in useExerciseService - service not available');
+      // Return a mock service with minimal functionality for web
+      return {
+        // Add minimal implementations for the most commonly used methods
+        getExercises: async () => [],
+        getExerciseById: async () => null,
+        // Add other methods as needed
+      } as any;
+    }
     throw new Error('Exercise service not initialized');
   }
   return context.exerciseService;
@@ -296,7 +350,20 @@ export function useExerciseService() {
 
 export function useWorkoutService() {
   const context = React.useContext(DatabaseServicesContext);
+  const isWeb = Platform.OS === 'web' || PlatformConstants.isWeb;
+  
   if (!context.workoutService) {
+    if (isWeb) {
+      console.log('[DB] Web platform detected in useWorkoutService - service not available');
+      // Return a mock service with minimal functionality for web
+      return {
+        // Add minimal implementations for the most commonly used methods
+        getWorkouts: async () => [],
+        getWorkoutById: async () => null,
+        saveWorkout: async () => {},
+        // Add other methods as needed
+      } as any;
+    }
     throw new Error('Workout service not initialized');
   }
   return context.workoutService;
@@ -304,7 +371,19 @@ export function useWorkoutService() {
 
 export function useTemplateService() {
   const context = React.useContext(DatabaseServicesContext);
+  const isWeb = Platform.OS === 'web' || PlatformConstants.isWeb;
+  
   if (!context.templateService) {
+    if (isWeb) {
+      console.log('[DB] Web platform detected in useTemplateService - service not available');
+      // Return a mock service with minimal functionality for web
+      return {
+        // Add minimal implementations for the most commonly used methods
+        getTemplates: async () => [],
+        getTemplateById: async () => null,
+        // Add other methods as needed
+      } as any;
+    }
     throw new Error('Template service not initialized');
   }
   return context.templateService;
@@ -312,7 +391,20 @@ export function useTemplateService() {
 
 export function usePublicationQueue() {
   const context = React.useContext(DatabaseServicesContext);
+  const isWeb = Platform.OS === 'web' || PlatformConstants.isWeb;
+  
   if (!context.publicationQueue) {
+    if (isWeb) {
+      console.log('[DB] Web platform detected in usePublicationQueue - service not available');
+      // Return a mock service with minimal functionality for web
+      return {
+        // Add minimal implementations for web
+        setNDK: () => {},
+        enqueue: async () => {},
+        processQueue: async () => {},
+        // Add other methods as needed
+      } as any;
+    }
     throw new Error('Publication queue not initialized');
   }
   return context.publicationQueue;
@@ -320,7 +412,20 @@ export function usePublicationQueue() {
 
 export function useFavoritesService() {
   const context = React.useContext(DatabaseServicesContext);
+  const isWeb = Platform.OS === 'web' || PlatformConstants.isWeb;
+  
   if (!context.favoritesService) {
+    if (isWeb) {
+      console.log('[DB] Web platform detected in useFavoritesService - service not available');
+      // Return a mock service with minimal functionality for web
+      return {
+        // Add minimal implementations for web
+        getFavorites: async () => [],
+        addFavorite: async () => {},
+        removeFavorite: async () => {},
+        // Add other methods as needed
+      } as any;
+    }
     throw new Error('Favorites service not initialized');
   }
   return context.favoritesService;
@@ -328,7 +433,18 @@ export function useFavoritesService() {
 
 export function usePOWRPackService() {
   const context = React.useContext(DatabaseServicesContext);
+  const isWeb = Platform.OS === 'web' || PlatformConstants.isWeb;
+  
   if (!context.powrPackService) {
+    if (isWeb) {
+      console.log('[DB] Web platform detected in usePOWRPackService - service not available');
+      // Return a mock service with minimal functionality for web
+      return {
+        // Add minimal implementations for web
+        getPacks: async () => [],
+        // Add other methods as needed
+      } as any;
+    }
     throw new Error('POWR Pack service not initialized');
   }
   return context.powrPackService;
@@ -336,7 +452,32 @@ export function usePOWRPackService() {
 
 export function useDatabase() {
   const context = React.useContext(DatabaseServicesContext);
+  const isWeb = Platform.OS === 'web' || PlatformConstants.isWeb;
+  
   if (!context.db) {
+    if (isWeb) {
+      // On web platforms, return a mock database object with minimal functionality
+      console.log('[DB] Web platform detected in useDatabase hook - returning mock database');
+      // Return a mock database that's cast as any first to avoid TypeScript errors
+      // This mock provides the most commonly used methods but won't be fully compliant
+      // with the SQLiteDatabase type
+      return {
+        // Database properties
+        databasePath: 'memory:web-fallback',
+        options: {},
+        nativeDatabase: null,
+        
+        // Provide minimal mock implementations for essential database methods
+        execAsync: async () => Promise.resolve(),
+        runAsync: async () => ({ changes: 0, lastInsertRowId: -1 }),
+        getFirstAsync: async () => null,
+        getAllAsync: async () => [],
+        closeAsync: async () => Promise.resolve(),
+        withTransactionAsync: async (callback: () => Promise<void>) => callback(),
+        isInTransactionAsync: async () => false,
+        serializeAsync: async () => ({})
+      } as unknown as SQLiteDatabase; // Double cast to avoid TypeScript errors
+    }
     throw new Error('Database not initialized');
   }
   return context.db;
