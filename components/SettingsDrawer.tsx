@@ -70,28 +70,28 @@ export default function SettingsDrawer() {
       Animated.parallel([
         Animated.spring(slideAnim, {
           toValue: 0,
-          useNativeDriver: true,
+          useNativeDriver: false,
           speed: 20,
           bounciness: 4
         }),
         Animated.timing(fadeAnim, {
           toValue: 1,
           duration: 200,
-          useNativeDriver: true
+          useNativeDriver: false
         })
       ]).start();
     } else {
       Animated.parallel([
         Animated.spring(slideAnim, {
           toValue: -DRAWER_WIDTH,
-          useNativeDriver: true,
+          useNativeDriver: false,
           speed: 20,
           bounciness: 4
         }),
         Animated.timing(fadeAnim, {
           toValue: 0,
           duration: 200,
-          useNativeDriver: true
+          useNativeDriver: false
         })
       ]).start();
     }

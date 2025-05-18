@@ -47,14 +47,14 @@ export default function OfflineIndicator() {
       Animated.timing(slideAnim, {
         toValue: 0,
         duration: 300,
-        useNativeDriver: true
+        useNativeDriver: false
       }).start();
     } else {
       // Slide out to the top
       Animated.timing(slideAnim, {
         toValue: -60,
         duration: 300,
-        useNativeDriver: true
+        useNativeDriver: false
       }).start();
     }
   }, [visibleOffline, slideAnim]);

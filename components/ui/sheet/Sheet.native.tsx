@@ -41,7 +41,7 @@ export function Sheet({ isOpen, onClose, children }: SheetProps) {
       setIsVisible(true);
       Animated.spring(translateY, {
         toValue: SCREEN_HEIGHT - SHEET_HEIGHT,
-        useNativeDriver: true,
+        useNativeDriver: false,
         damping: 25,
         mass: 0.7,
         stiffness: 300,
@@ -50,7 +50,7 @@ export function Sheet({ isOpen, onClose, children }: SheetProps) {
       Animated.timing(translateY, {
         toValue: SCREEN_HEIGHT,
         duration: 200,
-        useNativeDriver: true,
+        useNativeDriver: false,
       }).start(() => {
         setIsVisible(false);
       });
