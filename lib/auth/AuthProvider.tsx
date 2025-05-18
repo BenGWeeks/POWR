@@ -2,9 +2,8 @@ import React, { createContext, useContext, useEffect, useState, useRef } from 'r
 import { useAuthStore } from './AuthStateManager';
 import { AuthService } from './AuthService';
 import NDK from '@nostr-dev-kit/ndk-mobile';
-import * as SecureStore from 'expo-secure-store';
 import { SECURE_STORE_KEYS } from './constants';
-import { migrateKeysIfNeeded } from './persistence/secureStorage';
+import { migrateKeysIfNeeded, SecureStore } from './persistence/secureStorage';
 import { Platform } from 'react-native';
 
 /**
@@ -160,8 +159,13 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children, ndk }) => 
             }
           }
         }
-      } catch (error) {
-        console.error("[AuthProvider] Error initializing authentication:", error);
+      } catch (error: unknown) {
+        const err = error as Error;
+        console.error("[AuthProvider] Error initializing authentication:", {
+          message: err?.message || 'Unknown error',
+          name: err?.name || 'UnknownError',
+          stack: err?.stack || 'No stack trace available'
+        });
       } finally {
         initializingRef.current = false;
       }

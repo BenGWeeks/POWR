@@ -19,7 +19,7 @@ const LEGACY_KEYS = {
 };
 
 // Platform-specific secure storage implementation
-const SecureStore = {
+export const SecureStore = {
   // Get a value from secure storage
   getItemAsync: async (key: string): Promise<string | null> => {
     if (isWeb) {

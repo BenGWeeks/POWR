@@ -1,13 +1,54 @@
 import NDK, { NDKUser, NDKEvent, NDKSigner } from '@nostr-dev-kit/ndk-mobile';
-import * as SecureStore from 'expo-secure-store';
 import { NDKPrivateKeySigner } from '@nostr-dev-kit/ndk-mobile';
 import { NDKAmberSigner } from '../signers/NDKAmberSigner';
 import { generateId, generateDTag } from '@/utils/ids';
-import { v4 as uuidv4 } from 'uuid'; 
+import { v4 as uuidv4 } from 'uuid';
 import { AuthMethod } from './types';
 import { createLogger, enableModule } from '@/lib/utils/logger';
 import { SECURE_STORE_KEYS } from './constants';
 import { Platform } from 'react-native';
+import { isWeb, WebStorage } from '@/lib/platform/webFallbacks';
+import * as ExpoSecureStore from 'expo-secure-store';
+
+// Cross-platform secure storage implementation
+const SecureStore = {
+  getItemAsync: async (key: string): Promise<string | null> => {
+    if (isWeb) {
+      try {
+        return WebStorage.getItem(key);
+      } catch (error) {
+        console.warn(`[SecureStore] Web localStorage not available: ${error}`);
+        return null;
+      }
+    } else {
+      return ExpoSecureStore.getItemAsync(key);
+    }
+  },
+
+  setItemAsync: async (key: string, value: string): Promise<void> => {
+    if (isWeb) {
+      try {
+        WebStorage.setItem(key, value);
+      } catch (error) {
+        console.warn(`[SecureStore] Failed to write to web localStorage: ${error}`);
+      }
+    } else {
+      await ExpoSecureStore.setItemAsync(key, value);
+    }
+  },
+
+  deleteItemAsync: async (key: string): Promise<void> => {
+    if (isWeb) {
+      try {
+        WebStorage.removeItem(key);
+      } catch (error) {
+        console.warn(`[SecureStore] Failed to delete from web localStorage: ${error}`);
+      }
+    } else {
+      await ExpoSecureStore.deleteItemAsync(key);
+    }
+  }
+};
 
 // Create auth-specific logger with extended logging
 enableModule('AuthService');
@@ -54,8 +95,14 @@ export class AuthService {
     try {
       await this.initPromise;
       this.initialized = true;
-    } catch (error) {
-      logger.error("Initialization failed:", error);
+    } catch (error: unknown) {
+      // Improve error reporting with more details
+      const err = error as Error;
+      logger.error("Initialization failed:", {
+        message: err?.message || 'Unknown error',
+        name: err?.name || 'UnknownError',
+        stack: err?.stack || 'No stack trace available'
+      });
       // Reset promise so we can try again later
       this.initPromise = null;
       throw error;

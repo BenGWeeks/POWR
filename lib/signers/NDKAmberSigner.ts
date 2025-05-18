@@ -16,7 +16,7 @@ export class NDKAmberSigner implements NDKSigner {
   /**
    * The public key of the user in hex format
    */
-  private pubkey: string;
+  pubkey: string;
 
   /**
    * The package name of the Amber app
@@ -128,6 +128,27 @@ export class NDKAmberSigner implements NDKSigner {
    */
   async decrypt(sender: NDKUser, value: string, scheme?: NDKEncryptionScheme): Promise<string> {
     throw new Error('Decryption not implemented');
+  }
+
+  /**
+   * Implement userSync required by NDKSigner interface
+   * Returns the public key for synchronous user access
+   */
+  get userSync(): NDKUser {
+    const ndk = new NDK();
+    return ndk.getUser({ pubkey: this.pubkey });
+  }
+
+  /**
+   * Implement toPayload required by NDKSigner interface
+   * Serializes the signer for persistence
+   */
+  toPayload(): string {
+    return JSON.stringify({
+      type: 'amber',
+      pubkey: this.pubkey,
+      packageName: this.packageName
+    });
   }
 
   /**
