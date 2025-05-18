@@ -1,6 +1,8 @@
 // app/_layout.tsx
 import 'expo-dev-client';
 import '@/global.css';
+import * as Font from 'expo-font';
+import { loadFonts, fonts } from '@/lib/fonts';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -112,6 +114,10 @@ const DARK_THEME = {
 };
 
 export default function RootLayout() {
+  // Load custom fonts
+  const [fontsLoaded] = Font.useFonts({
+    'ArchivoBlack-Regular': require('../assets/fonts/ArchivoBlack-Regular.ttf'),
+  });
   const [isInitialized, setIsInitialized] = React.useState(false);
   const [isSplashFinished, setIsSplashFinished] = React.useState(false);
   const { colorScheme, isDarkColorScheme } = useColorScheme();
@@ -238,6 +244,14 @@ export default function RootLayout() {
   }
 
   // Main app UI wrapped in error boundary
+  if (!fontsLoaded) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#000' }}>
+        <Text style={{ color: '#fff' }}>Loading...</Text>
+      </View>
+    );
+  }
+
   return (
     <ErrorBoundary>
       <GestureHandlerRootView style={{ flex: 1 }}>

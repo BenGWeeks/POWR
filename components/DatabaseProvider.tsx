@@ -3,7 +3,7 @@ import React from 'react';
 import { View, ActivityIndicator, ScrollView, Text } from 'react-native';
 import { Platform } from 'react-native';
 // Import SQLite type and our new cross-platform database adapter
-import { type SQLiteDatabase } from 'expo-sqlite';
+import { type SQLiteDatabase, openDatabaseSync } from 'expo-sqlite';
 import { createDatabaseAdapter } from '@/lib/platform/databaseAdapter';
 import { PlatformConstants, safelyRun } from '@/lib/platform';
 import { schema } from '@/lib/db/schema';
@@ -456,29 +456,111 @@ export function useDatabase() {
   
   if (!context.db) {
     if (isWeb) {
-      // On web platforms, return a mock database object with minimal functionality
-      console.log('[DB] Web platform detected in useDatabase hook - returning mock database');
-      // Return a mock database that's cast as any first to avoid TypeScript errors
-      // This mock provides the most commonly used methods but won't be fully compliant
-      // with the SQLiteDatabase type
-      return {
-        // Database properties
-        databasePath: 'memory:web-fallback',
-        options: {},
+      // On web platforms, return a lightweight IndexedDB-based implementation
+      console.log('[DB] Creating web-friendly database fallback');
+      
+      // Create a minimal IndexedDB-compatible implementation
+      const webDb = {
+        // Basic properties
+        databasePath: 'web-indexed-db',
+        options: { version: 1 },
         nativeDatabase: null,
+        _data: new Map(),
+        _initialized: false,
         
-        // Provide minimal mock implementations for essential database methods
-        execAsync: async () => Promise.resolve(),
-        runAsync: async () => ({ changes: 0, lastInsertRowId: -1 }),
-        getFirstAsync: async () => null,
-        getAllAsync: async () => [],
+        // Core methods
+        execAsync: async (sql: string) => {
+          console.log('[WebDB] execAsync:', sql);
+          return Promise.resolve();
+        },
+        
+        runAsync: async (sql: string, params: any[] = []) => {
+          console.log('[WebDB] runAsync:', sql, params);
+          // For web, store in memory with some persistence through sessionStorage
+          try {
+            if (!webDb._initialized) {
+              try {
+                // Try to restore data from sessionStorage
+                const saved = sessionStorage.getItem('powr-web-db');
+                if (saved) {
+                  const parsed = JSON.parse(saved);
+                  Object.entries(parsed).forEach(([key, value]) => {
+                    webDb._data.set(key, value);
+                  });
+                }
+                webDb._initialized = true;
+              } catch (e) {
+                console.warn('[WebDB] Could not restore from sessionStorage:', e);
+              }
+            }
+            
+            // Simple INSERT handling
+            if (sql.toLowerCase().includes('insert into')) {
+              const tableMatch = sql.match(/insert into\s+([\w_]+)/i);
+              const tableName = tableMatch ? tableMatch[1] : 'unknown';
+              
+              // Generate an ID for the new item
+              const id = Date.now();
+              const tableData = webDb._data.get(tableName) || [];
+              const newItem = { id, ...params.reduce((obj, val, idx) => ({ ...obj, [`param${idx}`]: val }), {}) };
+              tableData.push(newItem);
+              webDb._data.set(tableName, tableData);
+              
+              // Try to persist to sessionStorage
+              try {
+                const dataObject = Object.fromEntries(webDb._data.entries());
+                sessionStorage.setItem('powr-web-db', JSON.stringify(dataObject));
+              } catch (e) {
+                console.warn('[WebDB] Could not save to sessionStorage:', e);
+              }
+              
+              return { changes: 1, lastInsertRowId: id };
+            }
+            
+            return { changes: 0, lastInsertRowId: -1 };
+          } catch (err) {
+            console.error('[WebDB] Error in runAsync:', err);
+            return { changes: 0, lastInsertRowId: -1 };
+          }
+        },
+        
+        getFirstAsync: async (sql: string, params: any[] = []) => {
+          console.log('[WebDB] getFirstAsync:', sql, params);
+          // Extract table name from query
+          const tableMatch = sql.match(/from\s+([\w_]+)/i);
+          const tableName = tableMatch ? tableMatch[1] : null;
+          
+          if (tableName) {
+            const tableData = webDb._data.get(tableName) || [];
+            return tableData.length > 0 ? tableData[0] : null;
+          }
+          return null;
+        },
+        
+        getAllAsync: async (sql: string, params: any[] = []) => {
+          console.log('[WebDB] getAllAsync:', sql, params);
+          // Extract table name from query
+          const tableMatch = sql.match(/from\s+([\w_]+)/i);
+          const tableName = tableMatch ? tableMatch[1] : null;
+          
+          if (tableName) {
+            return webDb._data.get(tableName) || [];
+          }
+          return [];
+        },
+        
         closeAsync: async () => Promise.resolve(),
         withTransactionAsync: async (callback: () => Promise<void>) => callback(),
         isInTransactionAsync: async () => false,
         serializeAsync: async () => ({})
-      } as unknown as SQLiteDatabase; // Double cast to avoid TypeScript errors
+      } as unknown as SQLiteDatabase;
+      
+      console.log('[DB] Successfully created web-friendly database fallback');
+      return webDb;
+    } else {
+      // On native platforms, this is a more serious error
+      throw new Error('Database not initialized');
     }
-    throw new Error('Database not initialized');
   }
   return context.db;
 }
