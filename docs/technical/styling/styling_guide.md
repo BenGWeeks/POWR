@@ -497,10 +497,7 @@ import { Label } from '@/components/ui/label';
   className="bg-card rounded-lg p-4"
   style={Platform.select({
     ios: {
-      shadowColor: '#000',
-      shadowOffset: { width: 0, height: 2 },
-      shadowOpacity: 0.1,
-      shadowRadius: 4,
+      boxShadow: '0px 2px 4px rgba(0, 0, 0, 0.1)',
     },
     android: {
       elevation: 4,
@@ -686,7 +683,7 @@ Problem: Shadows appear on iOS but not on Android, or look inconsistent.
 Solution:
 - Use platform-specific shadow implementation (see example above)
 - For Android, use `elevation` property
-- For iOS, use `shadowColor`, `shadowOffset`, `shadowOpacity`, and `shadowRadius`
+- For iOS, use `bhoxShadow`
 - Test shadow values on different Android versions
 
 ### Keyboard Issues

@@ -238,7 +238,7 @@ export default function TemplateDetailsLayout() {
               tabBarStyle: { 
                 backgroundColor: theme.colors.background,
                 elevation: 0,
-                shadowOpacity: 0,
+                boxShadow: 'none',
                 borderBottomWidth: 1,
                 borderBottomColor: theme.colors.border,
               },

@@ -70,7 +70,7 @@ export default function UserAvatar({
         style={{
           ...style,
           backgroundColor: 'transparent',
-          shadowColor: 'transparent',
+          boxShadow: 'none',
           borderColor: 'transparent',
           elevation: 0,
         }}

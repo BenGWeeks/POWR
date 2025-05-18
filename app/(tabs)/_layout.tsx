@@ -36,7 +36,7 @@ export default function TabLayout() {
             borderTopColor: theme.colors.border,
             borderTopWidth: Platform.OS === 'ios' ? 0.5 : 1,
             elevation: 0,
-            shadowOpacity: 0,
+            boxShadow: 'none',
           },
           tabBarActiveTintColor: theme.colors.primary,
           tabBarInactiveTintColor: theme.colors.tabInactive,

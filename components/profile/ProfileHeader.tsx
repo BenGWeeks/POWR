@@ -146,7 +146,7 @@ const ProfileHeader: React.FC<ProfileHeaderProps> = ({
               backgroundColor: 'transparent',
               overflow: 'hidden',
               borderWidth: 0,
-              shadowOpacity: 0,
+              boxShadow: 'none',
               elevation: 0
             }}
           />

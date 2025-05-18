@@ -329,10 +329,7 @@ export default function CalendarScreen() {
                               borderWidth: isSameDay(date, new Date()) && !hasWorkout(date) && !isSameDay(date, selectedDate) ? 2 : 0,
                               borderColor: primaryColor,
                               // Remove shadow effects that might be causing the weird shape
-                              shadowColor: 'transparent',
-                              shadowOffset: { width: 0, height: 0 },
-                              shadowOpacity: 0,
-                              shadowRadius: 0,
+                              boxShadow: 'none',
                               elevation: 0
                             }}
                           >
